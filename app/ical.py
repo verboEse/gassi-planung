@@ -62,10 +62,19 @@ def fold_line(line: str) -> str:
     return "\r\n ".join(chunk for chunk in chunks)
 
 
-def build_ics(person_id: int, person_name: str, assignments: list[Assignment]) -> str:
+def build_ics(
+    person_id: int,
+    person_name: str,
+    assignments: list[Assignment],
+    recurring: bool = True,
+) -> str:
     """Baut den kompletten Kalender (VCALENDAR) für eine Person.
 
     :param assignments: nur die Slots, die dieser Person zugewiesen sind
+        (eine Referenzwoche; bei recurring=True reicht genau eine Woche)
+    :param recurring: True = wöchentlich wiederkehrende Events (RRULE:FREQ=WEEKLY,
+        ohne Enddatum) mit wochentagsbasierten stabilen UIDs; False = einzelne
+        datierte Events mit datumsbasierten UIDs
     """
     lines = [
         "BEGIN:VCALENDAR",
@@ -81,14 +90,24 @@ def build_ics(person_id: int, person_name: str, assignments: list[Assignment]) -
         d = dt_date.fromisoformat(a.date)
         start = datetime(d.year, d.month, d.day, sh, sm, tzinfo=TZ).astimezone(timezone.utc)
         end = datetime(d.year, d.month, d.day, eh, em, tzinfo=TZ).astimezone(timezone.utc)
+        if recurring:
+            uid = f"gassi-wd{d.isoweekday()}-{a.slot}-{person_id}@gassi-planung"
+            description = f"Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – wöchentlich, zugewiesen an {person_name}"
+        else:
+            uid = f"gassi-{a.date}-{a.slot}-{person_id}@gassi-planung"
+            description = f"Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – zugewiesen an {person_name}"
         lines += [
             "BEGIN:VEVENT",
-            f"UID:gassi-{a.date}-{a.slot}-{person_id}@gassi-planung",
+            f"UID:{uid}",
             f"DTSTAMP:{stamp}",
             f"DTSTART:{start:%Y%m%dT%H%M%SZ}",
             f"DTEND:{end:%Y%m%dT%H%M%SZ}",
+        ]
+        if recurring:
+            lines.append("RRULE:FREQ=WEEKLY")
+        lines += [
             f"SUMMARY:{escape_text(f'🐕 Gassi – {SLOT_LABELS[a.slot]}')}",
-            f"DESCRIPTION:{escape_text(f'Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – zugewiesen an {person_name}')}",
+            f"DESCRIPTION:{escape_text(description)}",
             "END:VEVENT",
         ]
     lines.append("END:VCALENDAR")

@@ -51,9 +51,22 @@ class TestBuildIcs:
         assert "VERSION:2.0" in ics
         assert "X-WR-CALNAME:Gassi – Jan" in ics
 
-    def test_stable_uid_contains_keys(self):
+    def test_stable_uid_contains_weekday_and_slot(self):
+        # 2026-10-12 ist ein Montag (ISO-Wochentag 1)
         ics = build_ics(7, "Jan", [make_assignment("2026-10-12", "noon")])
+        assert "UID:gassi-wd1-noon-7@gassi-planung" in ics
+
+    def test_recurring_weekly_without_end_date(self):
+        ics = build_ics(1, "Jan", [make_assignment("2026-10-12", "morning")])
+        assert "RRULE:FREQ=WEEKLY" in ics
+        assert "UNTIL" not in ics
+        assert "COUNT" not in ics
+        assert "wöchentlich" in ics
+
+    def test_non_recurring_mode_uses_date_uid(self):
+        ics = build_ics(7, "Jan", [make_assignment("2026-10-12", "noon")], recurring=False)
         assert "UID:gassi-2026-10-12-noon-7@gassi-planung" in ics
+        assert "RRULE" not in ics
 
     def test_multiple_events_sorted(self):
         assignments = [
@@ -62,7 +75,7 @@ class TestBuildIcs:
         ]
         ics = build_ics(1, "Jan", assignments)
         assert ics.count("BEGIN:VEVENT") == 2
-        assert ics.index("2026-10-12-morning") < ics.index("2026-10-13-evening")
+        assert ics.index("DTSTART:20261012") < ics.index("DTSTART:20261013")
 
     def test_summer_time_utc_offset(self):
         # Juli = MESZ (UTC+2): 06:00 lokal -> 04:00 UTC
@@ -104,22 +117,15 @@ class TestCalendarEndpoint:
         assert res.headers["content-type"].startswith("text/calendar")
         body = res.text
         assert "X-WR-CALNAME:Gassi – Jan" in body
-        # 4 Wochen à 7 Tage à 3 Slots, fair verteilt auf 3 Personen: 28 eigene
-        assert body.count("BEGIN:VEVENT") == 28
+        # Eine Referenzwoche, fair verteilt auf 3 Personen: 7 eigene Slots,
+        # jeweils als wöchentlich wiederkehrendes Event ohne Enddatum
+        assert body.count("BEGIN:VEVENT") == 7
+        assert body.count("RRULE:FREQ=WEEKLY") == 7
+        assert "UNTIL" not in body
+        assert "COUNT" not in body
         assert "-1@gassi-planung" in body
         assert "-2@gassi-planung" not in body
         assert "-3@gassi-planung" not in body
-
-    def test_weeks_param(self, client):
-        p1 = add_person(client, "Jan")
-        res = client.get(f"/api/calendar/{p1['id']}.ics?weeks=1")
-        assert res.status_code == 200
-        assert res.text.count("BEGIN:VEVENT") == 21  # alle Slots, eine Person
-
-    def test_weeks_out_of_range_rejected(self, client):
-        p1 = add_person(client, "Jan")
-        assert client.get(f"/api/calendar/{p1['id']}.ics?weeks=0").status_code == 422
-        assert client.get(f"/api/calendar/{p1['id']}.ics?weeks=13").status_code == 422
 
     def test_unknown_person_404(self, client):
         assert client.get("/api/calendar/999.ics").status_code == 404
@@ -136,4 +142,4 @@ class TestCalendarEndpoint:
         res = client.get(f"/api/calendar/{p1['id']}.ics?weeks=1")
         assert res.text.count("BEGIN:VEVENT") == 0
         res2 = client.get(f"/api/calendar/{p2['id']}.ics?weeks=1")
-        assert res2.text.count("BEGIN:VEVENT") == 21
+        assert res2.text.count("BEGIN:VEVENT") == 21  # ganze Woche, je 1 Recurring-Event pro Slot

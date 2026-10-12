@@ -176,36 +176,27 @@ def create_app(db_path: str | None = None) -> FastAPI:
         return build_week(year, week)["plan"]
 
     @app.get("/api/calendar/{person_id}.ics")
-    def person_calendar(
-        person_id: int,
-        weeks: int = Query(4, ge=1, le=12),
-    ):
+    def person_calendar(person_id: int):
         """iCal-Feed mit den Gassi-Slots einer Person (abonnierbar).
 
-        Enthält die aktuelle Woche plus `weeks`-1 Folgewochen. Die UIDs sind
-        stabil, d. h. Kalender-Clients können den Feed abonnieren und erhalten
-        Updates, sobald sich der Plan ändert.
+        Da Prioritäten allgemeingültig pro Wochentag sind, wiederholt sich der
+        Plan identisch jede Woche: der Feed enthält pro Wochentag×Slot genau
+        ein wöchentlich wiederkehrendes Event (RRULE:FREQ=WEEKLY, ohne
+        Enddatum). UIDs sind wochentagsbasiert stabil – nach Planänderungen
+        sehen Abonnenten automatisch den neuen Stand.
         """
         person = db.get_person(person_id)
         if not person:
             raise HTTPException(404, "Person nicht gefunden")
 
         persons = db.list_persons()
-        person_ids = [p["id"] for p in persons]
-        weekday_prefs = db.prefs_all()
         monday = dt_date.today() - timedelta(days=dt_date.today().weekday())
-
-        assignments = []
-        for offset in range(weeks):
-            week_monday = monday + timedelta(weeks=offset)
-            iso = week_monday.isocalendar()
-            dates = week_dates(iso.year, iso.week)
-            result = compute_plan(
-                dates, person_ids, expand_prefs(dates, weekday_prefs)
-            )
-            assignments.extend(
-                a for a in result.assignments if a.person_id == person_id
-            )
+        iso = monday.isocalendar()
+        dates = week_dates(iso.year, iso.week)
+        result = compute_plan(
+            dates, [p["id"] for p in persons], expand_prefs(dates, db.prefs_all())
+        )
+        assignments = [a for a in result.assignments if a.person_id == person_id]
 
         ics = build_ics(person["id"], person["name"], assignments)
         return Response(
