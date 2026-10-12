@@ -1,0 +1,4 @@
+fastapi>=0.115,<1
+uvicorn[standard]>=0.30
+# PuLP 4.0 ist ein Rewrite mit neuer API (Rust-Core) – bewusst auf 3.x pinnen
+pulp>=3,<4

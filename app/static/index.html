@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>🐕 Gassi-Planung</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header>
+    <h1>🐕 Gassi-Planung</h1>
+    <nav class="week-nav">
+      <button id="prevWeek" title="Vorherige Woche">‹</button>
+      <span id="weekLabel">…</span>
+      <button id="nextWeek" title="Nächste Woche">›</button>
+      <button id="todayBtn" class="secondary">Heute</button>
+    </nav>
+  </header>
+
+  <main>
+    <section class="card" id="planSection">
+      <h2>Plan</h2>
+      <div id="planTable" class="table-wrap"></div>
+      <div id="planStats" class="stats"></div>
+    </section>
+
+    <section class="card" id="editSection">
+      <h2>Prioritäten</h2>
+      <div id="personTabs" class="tabs"></div>
+      <p class="hint">
+        <strong>3</strong> = gehe ich gern · <strong>2</strong> = ok ·
+        <strong>1</strong> = nur wenn nötig · <strong>🚫</strong> = nicht zu Hause ·
+        <strong>–</strong> = neutral (wie 2)
+      </p>
+      <div id="editGrid" class="table-wrap"></div>
+    </section>
+
+    <section class="card" id="personsSection">
+      <h2>Personen</h2>
+      <div id="personList" class="person-list"></div>
+      <form id="addPersonForm">
+        <input id="newName" type="text" placeholder="Name" maxlength="50" required>
+        <input id="newColor" type="color" value="#4a90d9" title="Farbe">
+        <button type="submit">+ Hinzufügen</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
