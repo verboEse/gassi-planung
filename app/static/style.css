@@ -111,6 +111,27 @@ td.unassigned {
 }
 .tab.active { color: #fff; font-weight: 700; }
 
+.cal-link {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.5rem;
+}
+.cal-link input {
+  background: #222b34;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.25rem 0.5rem;
+  font-size: 0.82rem;
+  width: min(22rem, 100%);
+}
+.cal-link button { padding: 0.25rem 0.6rem; font-size: 0.82rem; }
+.cal-download { color: var(--accent); }
+
 .hint { color: var(--muted); font-size: 0.85rem; margin: 0.25rem 0 0.75rem; }
 
 select {

@@ -79,6 +79,14 @@ class Database:
             ).fetchone()
         return row is not None
 
+    def get_person(self, person_id: int) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT id, name, color, active FROM persons WHERE id = ? AND active = 1",
+                (person_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
     # --- Prioritäten --------------------------------------------------------
 
     def set_pref(

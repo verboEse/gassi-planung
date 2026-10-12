@@ -18,6 +18,10 @@ Wochenplan** und stellt ihn als Tabelle dar.
   - Weiche Fairness: Einsätze werden über die Woche möglichst gleichmäßig verteilt
   - Slots, an denen **alle** blockiert haben, werden als „⚠️ frei“ markiert statt zu crashen
 - ⚡ Plan wird bei jeder Änderung live neu berechnet
+- 📅 **iCal-Feed pro Person** (`/api/calendar/{id}.ics`): eigene Gassi-Termine im
+  persönlichen Kalender abonnieren (Google Kalender, Apple Kalender, …).
+  Stabile UIDs → Änderungen am Plan erscheinen automatisch im Kalender.
+  Enthält die aktuelle Woche + 3 Folgewochen (per `?weeks=` bis 12 einstellbar).
 - 💾 Persistenz in SQLite (kein Setup nötig)
 
 ## Schnellstart
@@ -67,6 +71,11 @@ pytest
 | `GET`/`POST` | `/api/persons` | Personen auflisten / anlegen |
 | `DELETE` | `/api/persons/{id}` | Person löschen |
 | `PUT` | `/api/prefs` | Priorität setzen (`value`: `-1` blockiert, `1–3`, `null` löscht) |
+| `GET` | `/api/calendar/{id}.ics?weeks=4` | iCal-Feed der Person (aktuelle Woche + Folgewochen) |
+
+Die Slot-Zeitfenster im Kalender (Morgens 6–8 Uhr, Mittags 12–14 Uhr,
+Abends 18–20 Uhr, Europe/Berlin) sind als Konstante `SLOT_TIMES` in
+`app/ical.py` definiert.
 
 Interaktive API-Doku: `http://localhost:8585/docs`
 

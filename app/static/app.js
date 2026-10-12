@@ -82,6 +82,7 @@ function renderAll() {
   renderPlan();
   renderStats();
   renderTabs();
+  renderCalLink();
   renderGrid();
   renderPersonList();
 }
@@ -132,9 +133,43 @@ function renderTabs() {
     btn.textContent = p.name;
     if (p.id === state.selectedPerson) btn.style.background = p.color;
     btn.style.borderColor = p.color;
-    btn.onclick = () => { state.selectedPerson = p.id; renderTabs(); renderGrid(); };
+    btn.onclick = () => { state.selectedPerson = p.id; renderTabs(); renderGrid(); renderCalLink(); };
     el.appendChild(btn);
   }
+}
+
+function renderCalLink() {
+  const el = document.getElementById("calLink");
+  const p = state.data.persons.find(x => x.id === state.selectedPerson);
+  if (!p) { el.innerHTML = ""; return; }
+  const url = `${location.origin}/api/calendar/${p.id}.ics`;
+  el.innerHTML = "";
+  const label = document.createElement("span");
+  label.textContent = `📅 iCal-Feed für ${p.name}: `;
+  const input = document.createElement("input");
+  input.type = "text";
+  input.readOnly = true;
+  input.value = url;
+  input.onclick = () => input.select();
+  const copyBtn = document.createElement("button");
+  copyBtn.className = "secondary";
+  copyBtn.textContent = "Kopieren";
+  copyBtn.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      copyBtn.textContent = "✓ Kopiert";
+    } catch {
+      input.select();
+      document.execCommand("copy");
+      copyBtn.textContent = "✓ Kopiert";
+    }
+    setTimeout(() => { copyBtn.textContent = "Kopieren"; }, 2000);
+  };
+  const dl = document.createElement("a");
+  dl.href = url;
+  dl.textContent = "Download";
+  dl.className = "cal-download";
+  el.append(label, input, copyBtn, dl);
 }
 
 function renderGrid() {

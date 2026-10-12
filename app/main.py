@@ -8,14 +8,16 @@ from __future__ import annotations
 import os
 import sqlite3
 from datetime import date as dt_date
+from datetime import timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .db import Database
+from .ical import build_ics
 from .scheduler import (
     SLOT_LABELS,
     SLOTS,
@@ -155,6 +157,45 @@ def create_app(db_path: str | None = None) -> FastAPI:
         year: int | None = Query(None), week: int | None = Query(None)
     ):
         return build_week(year, week)["plan"]
+
+    @app.get("/api/calendar/{person_id}.ics")
+    def person_calendar(
+        person_id: int,
+        weeks: int = Query(4, ge=1, le=12),
+    ):
+        """iCal-Feed mit den Gassi-Slots einer Person (abonnierbar).
+
+        Enthält die aktuelle Woche plus `weeks`-1 Folgewochen. Die UIDs sind
+        stabil, d. h. Kalender-Clients können den Feed abonnieren und erhalten
+        Updates, sobald sich der Plan ändert.
+        """
+        person = db.get_person(person_id)
+        if not person:
+            raise HTTPException(404, "Person nicht gefunden")
+
+        persons = db.list_persons()
+        person_ids = [p["id"] for p in persons]
+        monday = dt_date.today() - timedelta(days=dt_date.today().weekday())
+
+        assignments = []
+        for offset in range(weeks):
+            week_monday = monday + timedelta(weeks=offset)
+            iso = week_monday.isocalendar()
+            dates = week_dates(iso.year, iso.week)
+            result = compute_plan(dates, person_ids, db.prefs_for_dates(dates))
+            assignments.extend(
+                a for a in result.assignments if a.person_id == person_id
+            )
+
+        ics = build_ics(person["id"], person["name"], assignments)
+        return Response(
+            content=ics,
+            media_type="text/calendar; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="gassi-{person["name"]}.ics"',
+                "Cache-Control": "no-cache",
+            },
+        )
 
     @app.put("/api/prefs")
     def put_pref(body: PrefIn):
