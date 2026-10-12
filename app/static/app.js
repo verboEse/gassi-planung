@@ -186,14 +186,15 @@ function renderGrid() {
   const table = document.createElement("table");
   table.innerHTML = `<thead><tr><th>Tag</th>${SLOT_KEYS.map(s => `<th>${label[s]}</th>`).join("")}</tr></thead>`;
   const tbody = document.createElement("tbody");
-  for (const day of plan.days) {
+  plan.days.forEach((day, idx) => {
+    const wd = String(idx + 1); // 1=Mo … 7=So – Prioritäten gelten allgemeingültig pro Wochentag
     const tr = document.createElement("tr");
     tr.innerHTML = `<td class="day-label">${day.weekday}<span class="date">${fmtDate(day.date)}</span></td>`;
     for (const s of SLOT_KEYS) {
       const td = document.createElement("td");
       const sel = document.createElement("select");
-      const current = (myPrefs[day.date] && myPrefs[day.date][s] !== undefined)
-        ? String(myPrefs[day.date][s]) : "";
+      const current = (myPrefs[wd] && myPrefs[wd][s] !== undefined)
+        ? String(myPrefs[wd][s]) : "";
       for (const opt of PREF_OPTIONS) {
         const o = document.createElement("option");
         o.value = opt.value;
@@ -203,12 +204,12 @@ function renderGrid() {
       }
       if (current === "-1") sel.classList.add("blocked");
       if (current === "3") sel.classList.add("high");
-      sel.onchange = () => setPref(p.id, day.date, s, sel.value === "" ? null : parseInt(sel.value, 10));
+      sel.onchange = () => setPref(p.id, idx + 1, s, sel.value === "" ? null : parseInt(sel.value, 10));
       td.appendChild(sel);
       tr.appendChild(td);
     }
     tbody.appendChild(tr);
-  }
+  });
   table.appendChild(tbody);
   wrap.appendChild(table);
 }
@@ -237,12 +238,12 @@ function renderPersonList() {
 
 // ---------- Aktionen -----------------------------------------------------------
 
-async function setPref(personId, date, slot, value) {
+async function setPref(personId, weekday, slot, value) {
   try {
     await api("/api/prefs", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ person_id: personId, date, slot, value }),
+      body: JSON.stringify({ person_id: personId, weekday, slot, value }),
     });
     await loadWeek(); // Plan live neu berechnen
   } catch (e) {

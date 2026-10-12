@@ -127,14 +127,11 @@ class TestCalendarEndpoint:
     def test_blocked_slots_not_in_feed(self, client):
         p1 = add_person(client, "Jan")
         p2 = add_person(client, "Laura")
-        # Jan blockiert alles -> sein Feed hat 0 Events, Lauras alle
-        from datetime import date, timedelta
-        monday = date.today() - timedelta(days=date.today().weekday())
-        for offset in range(7):
-            d = (monday + timedelta(days=offset)).isoformat()
+        # Jan blockiert alles (alle Wochentage) -> sein Feed hat 0 Events, Lauras alle
+        for wd in range(1, 8):
             for slot in ("morning", "noon", "evening"):
                 client.put("/api/prefs", json={
-                    "person_id": p1["id"], "date": d, "slot": slot, "value": -1,
+                    "person_id": p1["id"], "weekday": wd, "slot": slot, "value": -1,
                 })
         res = client.get(f"/api/calendar/{p1['id']}.ics?weeks=1")
         assert res.text.count("BEGIN:VEVENT") == 0

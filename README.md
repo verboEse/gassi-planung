@@ -11,7 +11,8 @@ Wochenplan** und stellt ihn als Tabelle dar.
 
 - 📅 Wochenansicht (Mo–So) mit drei Slots pro Tag, beliebig vor/zurück blättern
 - 🙋 Personenverwaltung mit Farben
-- 🎚️ Prioritäten pro Person & Slot: **3** = gern · **2** = ok · **1** = nur wenn nötig · **🚫** = nicht zu Hause
+- 🎚️ Prioritäten pro Person & Slot: **3** = gern · **2** = ok · **1** = nur wenn nötig · **🚫** = nicht zu Hause.
+  **Allgemeingültig pro Wochentag** (Mo–So) – einmal einstellen, gilt für jede Woche
 - 🧮 Optimale Planberechnung per ILP (ganzzahlige Optimierung, CBC-Solver via PuLP):
   - Blockierungen sind harte Regeln
   - Maximale Gesamt-Priorität
@@ -70,7 +71,7 @@ pytest
 | `GET` | `/api/plan?year=…&week=…` | Nur der berechnete Plan |
 | `GET`/`POST` | `/api/persons` | Personen auflisten / anlegen |
 | `DELETE` | `/api/persons/{id}` | Person löschen |
-| `PUT` | `/api/prefs` | Priorität setzen (`value`: `-1` blockiert, `1–3`, `null` löscht) |
+| `PUT` | `/api/prefs` | Priorität setzen: `weekday` (1=Mo…7=So), `slot`, `value` (`-1` blockiert, `1–3`, `null` löscht) |
 | `GET` | `/api/calendar/{id}.ics?weeks=4` | iCal-Feed der Person (aktuelle Woche + Folgewochen) |
 
 Die Slot-Zeitfenster im Kalender (Morgens 6–8 Uhr, Mittags 12–14 Uhr,

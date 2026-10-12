@@ -36,7 +36,7 @@ class PersonIn(BaseModel):
 
 class PrefIn(BaseModel):
     person_id: int
-    date: str
+    weekday: int = Field(ge=1, le=7)  # ISO-Wochentag: 1=Montag … 7=Sonntag
     slot: str
     value: int | None = None  # None = Eintrag löschen (zurück zu neutral)
 
@@ -44,6 +44,23 @@ class PrefIn(BaseModel):
 def week_dates(year: int, week: int) -> list[str]:
     """Montag bis Sonntag der ISO-Kalenderwoche als ISO-Datumsstrings."""
     return [dt_date.fromisocalendar(year, week, d).isoformat() for d in range(1, 8)]
+
+
+def expand_prefs(
+    dates: list[str], weekday_prefs: dict[tuple[int, str, int], int]
+) -> dict[tuple[str, str, int], int]:
+    """Bildet wochentagsbasierte Prioritäten auf konkrete Datumstage ab.
+
+    dates muss an einem Montag beginnen und lückenlos aufeinanderfolgen
+    (Index 0 = Montag = ISO-Wochentag 1).
+    """
+    out: dict[tuple[str, str, int], int] = {}
+    for i, d in enumerate(dates):
+        wd = (i % 7) + 1
+        for (w, s, pid), v in weekday_prefs.items():
+            if w == wd:
+                out[(d, s, pid)] = v
+    return out
 
 
 def create_app(db_path: str | None = None) -> FastAPI:
@@ -95,8 +112,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
     def build_week(year: int | None, week: int | None) -> dict:
         year, week, dates = resolve_week(year, week)
         persons = db.list_persons()
-        prefs = db.prefs_for_dates(dates)
-        result = compute_plan(dates, [p["id"] for p in persons], prefs)
+        weekday_prefs = db.prefs_all()
+        result = compute_plan(dates, [p["id"] for p in persons], expand_prefs(dates, weekday_prefs))
 
         by_key = {(a.date, a.slot): a for a in result.assignments}
         person_by_id = {p["id"]: p for p in persons}
@@ -120,8 +137,8 @@ def create_app(db_path: str | None = None) -> FastAPI:
             days.append({"date": d, "weekday": WEEKDAYS[i], "slots": slots_out})
 
         prefs_out: dict[str, dict[str, dict[str, int]]] = {}
-        for (d, s, pid), v in prefs.items():
-            prefs_out.setdefault(str(pid), {}).setdefault(d, {})[s] = v
+        for (wd, s, pid), v in weekday_prefs.items():
+            prefs_out.setdefault(str(pid), {}).setdefault(str(wd), {})[s] = v
 
         return {
             "year": year,
@@ -175,6 +192,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
         persons = db.list_persons()
         person_ids = [p["id"] for p in persons]
+        weekday_prefs = db.prefs_all()
         monday = dt_date.today() - timedelta(days=dt_date.today().weekday())
 
         assignments = []
@@ -182,7 +200,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
             week_monday = monday + timedelta(weeks=offset)
             iso = week_monday.isocalendar()
             dates = week_dates(iso.year, iso.week)
-            result = compute_plan(dates, person_ids, db.prefs_for_dates(dates))
+            result = compute_plan(
+                dates, person_ids, expand_prefs(dates, weekday_prefs)
+            )
             assignments.extend(
                 a for a in result.assignments if a.person_id == person_id
             )
@@ -203,13 +223,9 @@ def create_app(db_path: str | None = None) -> FastAPI:
             raise HTTPException(404, "Person nicht gefunden")
         if body.slot not in SLOTS:
             raise HTTPException(422, f"Ungültiger Slot: {body.slot}")
-        try:
-            dt_date.fromisoformat(body.date)
-        except ValueError:
-            raise HTTPException(422, "Ungültiges Datum (erwartet: YYYY-MM-DD)")
         if body.value is not None and body.value not in VALID_PREF_VALUES:
             raise HTTPException(422, "Wert muss -1 (blockiert) oder 1–3 sein")
-        db.set_pref(body.person_id, body.date, body.slot, body.value)
+        db.set_pref(body.person_id, body.weekday, body.slot, body.value)
         return {"ok": True}
 
     # --- Frontend -------------------------------------------------------------

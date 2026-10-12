@@ -51,19 +51,31 @@ class TestPrefs:
     def test_set_and_read_back(self, client):
         p = add_person(client, "Jan")
         res = client.put("/api/prefs", json={
-            "person_id": p["id"], "date": "2026-10-12", "slot": "morning", "value": 3,
+            "person_id": p["id"], "weekday": 1, "slot": "morning", "value": 3,
         })
         assert res.status_code == 200
         week = client.get("/api/week?year=2026&week=42").json()
-        assert week["prefs"][str(p["id"])]["2026-10-12"]["morning"] == 3
+        assert week["prefs"][str(p["id"])]["1"]["morning"] == 3
+
+    def test_pref_applies_to_every_week(self, client):
+        """Allgemeingültigkeit: derselbe Wochentags-Eintrag gilt in jeder KW."""
+        p = add_person(client, "Jan")
+        client.put("/api/prefs", json={
+            "person_id": p["id"], "weekday": 3, "slot": "evening", "value": -1,
+        })
+        for kw in (42, 43, 44):
+            week = client.get(f"/api/week?year=2026&week={kw}").json()
+            assert week["prefs"][str(p["id"])]["3"]["evening"] == -1
+            wed = next(d for d in week["plan"]["days"] if d["weekday"] == "Mi")
+            assert wed["slots"]["evening"].get("person_id") != p["id"]
 
     def test_clear_with_null(self, client):
         p = add_person(client, "Jan")
         client.put("/api/prefs", json={
-            "person_id": p["id"], "date": "2026-10-12", "slot": "morning", "value": -1,
+            "person_id": p["id"], "weekday": 1, "slot": "morning", "value": -1,
         })
         client.put("/api/prefs", json={
-            "person_id": p["id"], "date": "2026-10-12", "slot": "morning", "value": None,
+            "person_id": p["id"], "weekday": 1, "slot": "morning", "value": None,
         })
         week = client.get("/api/week?year=2026&week=42").json()
         assert str(p["id"]) not in week["prefs"]
@@ -72,27 +84,28 @@ class TestPrefs:
         p = add_person(client, "Jan")
         for bad in (0, 4, 99, -2):
             res = client.put("/api/prefs", json={
-                "person_id": p["id"], "date": "2026-10-12", "slot": "morning", "value": bad,
+                "person_id": p["id"], "weekday": 1, "slot": "morning", "value": bad,
             })
             assert res.status_code == 422, bad
 
     def test_invalid_slot_rejected(self, client):
         p = add_person(client, "Jan")
         res = client.put("/api/prefs", json={
-            "person_id": p["id"], "date": "2026-10-12", "slot": "nachts", "value": 2,
+            "person_id": p["id"], "weekday": 1, "slot": "nachts", "value": 2,
         })
         assert res.status_code == 422
 
-    def test_invalid_date_rejected(self, client):
+    def test_invalid_weekday_rejected(self, client):
         p = add_person(client, "Jan")
-        res = client.put("/api/prefs", json={
-            "person_id": p["id"], "date": "12.10.2026", "slot": "morning", "value": 2,
-        })
-        assert res.status_code == 422
+        for bad in (0, 8, -1):
+            res = client.put("/api/prefs", json={
+                "person_id": p["id"], "weekday": bad, "slot": "morning", "value": 2,
+            })
+            assert res.status_code == 422, bad
 
     def test_unknown_person_rejected(self, client):
         res = client.put("/api/prefs", json={
-            "person_id": 999, "date": "2026-10-12", "slot": "morning", "value": 2,
+            "person_id": 999, "weekday": 1, "slot": "morning", "value": 2,
         })
         assert res.status_code == 404
 
@@ -132,7 +145,7 @@ class TestWeekAndPlan:
         p1 = add_person(client, "Jan")
         p2 = add_person(client, "Laura")
         client.put("/api/prefs", json={
-            "person_id": p1["id"], "date": "2026-10-13", "slot": "evening", "value": -1,
+            "person_id": p1["id"], "weekday": 2, "slot": "evening", "value": -1,
         })
         plan = client.get("/api/plan?year=2026&week=42").json()
         tue = next(d for d in plan["days"] if d["date"] == "2026-10-13")
@@ -141,7 +154,7 @@ class TestWeekAndPlan:
     def test_plan_unassigned_when_all_blocked(self, client):
         p = add_person(client, "Jan")
         client.put("/api/prefs", json={
-            "person_id": p["id"], "date": "2026-10-14", "slot": "noon", "value": -1,
+            "person_id": p["id"], "weekday": 3, "slot": "noon", "value": -1,
         })
         plan = client.get("/api/plan?year=2026&week=42").json()
         wed = next(d for d in plan["days"] if d["date"] == "2026-10-14")

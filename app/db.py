@@ -1,24 +1,31 @@
-"""SQLite-Persistenz für die Gassi-Planung (Stdlib sqlite3, ohne ORM)."""
+"""SQLite-Persistenz für die Gassi-Planung (Stdlib sqlite3, ohne ORM).
+
+Prioritäten sind **allgemeingültig pro Wochentag** (ISO: 1=Montag … 7=Sonntag)
+und gelten damit für jede Kalenderwoche gleichermaßen.
+"""
 from __future__ import annotations
 
 import sqlite3
+from datetime import date as dt_date
 from pathlib import Path
 
-SCHEMA = """
+PERSONS_DDL = """
 CREATE TABLE IF NOT EXISTS persons (
     id     INTEGER PRIMARY KEY AUTOINCREMENT,
     name   TEXT NOT NULL UNIQUE,
     color  TEXT NOT NULL DEFAULT '#4a90d9',
     active INTEGER NOT NULL DEFAULT 1
-);
+)
+"""
 
+PREFS_DDL = """
 CREATE TABLE IF NOT EXISTS prefs (
     person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
-    date      TEXT NOT NULL,
+    weekday   INTEGER NOT NULL CHECK (weekday BETWEEN 1 AND 7),
     slot      TEXT NOT NULL,
     value     INTEGER NOT NULL,
-    PRIMARY KEY (person_id, date, slot)
-);
+    PRIMARY KEY (person_id, weekday, slot)
+)
 """
 
 DEFAULT_COLORS = [
@@ -36,14 +43,37 @@ DEFAULT_COLORS = [
 class Database:
     def __init__(self, path: str | Path):
         self.path = str(path)
-        with self._connect() as con:
-            con.executescript(SCHEMA)
+        self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA foreign_keys = ON")
         return con
+
+    def _init_schema(self) -> None:
+        with self._connect() as con:
+            con.execute(PERSONS_DDL)
+            cols = {r[1] for r in con.execute("PRAGMA table_info(prefs)")}
+            if cols and "date" in cols:
+                # Migration: alte datumsbasierte Tabelle (person_id, date, slot, value)
+                # -> wochentagsbasiert. Bei mehreren Daten desselben Wochentags
+                # gewinnt das jeweils späteste Datum.
+                con.execute("ALTER TABLE prefs RENAME TO prefs_old")
+                con.execute(PREFS_DDL)
+                rows = con.execute(
+                    "SELECT person_id, date, slot, value FROM prefs_old ORDER BY date ASC"
+                ).fetchall()
+                for r in rows:
+                    wd = dt_date.fromisoformat(r["date"]).isoweekday()
+                    con.execute(
+                        "INSERT OR REPLACE INTO prefs (person_id, weekday, slot, value)"
+                        " VALUES (?, ?, ?, ?)",
+                        (r["person_id"], wd, r["slot"], r["value"]),
+                    )
+                con.execute("DROP TABLE prefs_old")
+            else:
+                con.execute(PREFS_DDL)
 
     # --- Personen ---------------------------------------------------------
 
@@ -87,37 +117,36 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
-    # --- Prioritäten --------------------------------------------------------
+    # --- Prioritäten (allgemeingültig pro Wochentag) ------------------------
 
     def set_pref(
-        self, person_id: int, date: str, slot: str, value: int | None
+        self, person_id: int, weekday: int, slot: str, value: int | None
     ) -> None:
-        """Setzt eine Priorität; value=None löscht den Eintrag (zurück zu neutral)."""
+        """Setzt eine Priorität für einen Wochentag (1=Mo … 7=So).
+
+        value=None löscht den Eintrag (zurück zu neutral).
+        """
         with self._connect() as con:
             if value is None:
                 con.execute(
-                    "DELETE FROM prefs WHERE person_id = ? AND date = ? AND slot = ?",
-                    (person_id, date, slot),
+                    "DELETE FROM prefs WHERE person_id = ? AND weekday = ? AND slot = ?",
+                    (person_id, weekday, slot),
                 )
             else:
                 con.execute(
                     """
-                    INSERT INTO prefs (person_id, date, slot, value)
+                    INSERT INTO prefs (person_id, weekday, slot, value)
                     VALUES (?, ?, ?, ?)
-                    ON CONFLICT (person_id, date, slot)
+                    ON CONFLICT (person_id, weekday, slot)
                     DO UPDATE SET value = excluded.value
                     """,
-                    (person_id, date, slot, value),
+                    (person_id, weekday, slot, value),
                 )
 
-    def prefs_for_dates(self, dates: list[str]) -> dict[tuple[str, str, int], int]:
-        """Liefert {(date, slot, person_id): value} für die gegebenen Tage."""
-        if not dates:
-            return {}
-        placeholders = ",".join("?" for _ in dates)
+    def prefs_all(self) -> dict[tuple[int, str, int], int]:
+        """Liefert {(weekday, slot, person_id): value} aller Prioritäten."""
         with self._connect() as con:
             rows = con.execute(
-                f"SELECT person_id, date, slot, value FROM prefs WHERE date IN ({placeholders})",
-                dates,
+                "SELECT person_id, weekday, slot, value FROM prefs"
             ).fetchall()
-        return {(r["date"], r["slot"], r["person_id"]): r["value"] for r in rows}
+        return {(r["weekday"], r["slot"], r["person_id"]): r["value"] for r in rows}
