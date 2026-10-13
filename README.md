@@ -40,6 +40,32 @@ Dann im Browser öffnen: <http://localhost:8585>
 Der Datenbankpfad ist per Umgebungsvariable `GASSI_DB` konfigurierbar
 (Default: `./gassi.sqlite3`). Anmeldungen sind standardmäßig erforderlich.
 
+## Docker-Veröffentlichung
+
+`compose.yaml` startet die App intern und Caddy als einzigen öffentlich
+veröffentlichten Dienst. Caddy stellt automatisch HTTPS für
+`gassiplan.verboese.de` bereit. Dafür müssen DNS auf den Docker-Host zeigen und
+TCP-Port 80 sowie 443 von außen erreichbar sein. Die Teleport-Verbindung zu
+`pam.dreyers.eu` bleibt für die Administration des Hosts; der öffentliche
+App-Traffic läuft über Caddy, nicht über Teleport.
+
+Vor dem Start `.env.example` nach `.env` kopieren und beide Werte durch
+zufällige Geheimnisse ersetzen (jeweils z. B. mit `openssl rand -hex 32`
+erzeugen). `GASSI_SESSION_SECRET` dauerhaft behalten; den Einladungscode an die
+Teilnehmer weitergeben. `.env` wird weder ins Image kopiert noch von Git erfasst.
+Der Container startet mit einer neuen, persistenten Docker-Datenbank; die lokale
+SQLite-Datei bleibt unverändert.
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+docker compose down
+```
+
+`docker compose down` erhält die Datenvolumes. `docker compose down -v` löscht
+sie samt Datenbank und Caddy-Zertifikaten. Passwort-Reset im Container:
+`docker compose exec app python -m app.admin reset-password "Teilnehmername"`.
+
 ### Konten einrichten
 
 Für den öffentlichen Betrieb HTTPS verwenden. Diese Umgebungsvariablen setzen:
