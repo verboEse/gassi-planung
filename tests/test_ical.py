@@ -89,14 +89,18 @@ class TestBuildIcs:
         assert "DTSTART:20260105T050000Z" in ics
 
     def test_slot_time_windows(self):
-        ics = build_ics(1, "Jan", [make_assignment("2026-01-05", "evening")])
-        assert "DTSTART:20260105T170000Z" in ics  # 18:00 MEZ
-        assert "DTEND:20260105T190000Z" in ics    # 20:00 MEZ
+        noon = build_ics(1, "Jan", [make_assignment("2026-01-05", "noon")])
+        assert "DTSTART:20260105T123000Z" in noon  # 13:30 MEZ
+        assert "DTEND:20260105T143000Z" in noon    # 15:30 MEZ
+
+        evening = build_ics(1, "Jan", [make_assignment("2026-01-05", "evening")])
+        assert "DTSTART:20260105T190000Z" in evening  # 20:00 MEZ
+        assert "DTEND:20260105T210000Z" in evening    # 22:00 MEZ
 
 
 @pytest.fixture()
 def client(tmp_path):
-    app = create_app(str(tmp_path / "test.sqlite3"))
+    app = create_app(str(tmp_path / "test.sqlite3"), auth_enabled=False)
     with TestClient(app) as c:
         yield c
 

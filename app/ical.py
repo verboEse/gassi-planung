@@ -21,8 +21,8 @@ TZ = ZoneInfo("Europe/Berlin")
 #: Zeitfenster der Slots (lokale Zeit Europe/Berlin): slot -> ((start_h, start_m), (end_h, end_m))
 SLOT_TIMES: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
     "morning": ((6, 0), (8, 0)),
-    "noon": ((12, 0), (14, 0)),
-    "evening": ((18, 0), (20, 0)),
+    "noon": ((13, 30), (15, 30)),
+    "evening": ((20, 0), (22, 0)),
 }
 
 PRODID = "-//verboEse//gassi-planung//DE"

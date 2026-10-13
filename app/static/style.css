@@ -9,6 +9,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -60,6 +61,21 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
 
 .week-nav { display: flex; align-items: center; gap: 0.5rem; }
 #weekLabel { font-weight: 600; min-width: 9.5rem; text-align: center; }
+
+#accountInfo { display: flex; align-items: center; gap: 0.6rem; }
+.auth-card { max-width: 34rem; margin: 1rem auto; }
+.auth-modes { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
+.auth-modes .active { background: var(--accent); color: #fff; }
+#authForm, .account-form { display: grid; gap: 0.8rem; }
+#authForm label, .account-form label { display: grid; gap: 0.3rem; }
+#authForm input, .account-form input {
+  background: #222b34;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.5rem 0.6rem;
+  font-size: 0.95rem;
+}
 
 .table-wrap { overflow-x: auto; }
 
@@ -131,6 +147,7 @@ td.unassigned {
 }
 .cal-link button { padding: 0.25rem 0.6rem; font-size: 0.82rem; }
 .cal-download { color: var(--accent); }
+.cal-link button.cal-download { color: #fff; }
 
 .hint { color: var(--muted); font-size: 0.85rem; margin: 0.25rem 0 0.75rem; }
 

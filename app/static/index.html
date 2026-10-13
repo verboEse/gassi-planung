@@ -9,15 +9,43 @@
 <body>
   <header>
     <h1>🐕 Gassi-Planung</h1>
-    <nav class="week-nav">
+    <nav class="week-nav" id="weekNav" hidden>
       <button id="prevWeek" title="Vorherige Woche">‹</button>
       <span id="weekLabel">…</span>
       <button id="nextWeek" title="Nächste Woche">›</button>
       <button id="todayBtn" class="secondary">Heute</button>
     </nav>
+    <div id="accountInfo" hidden>
+      <span id="accountName"></span>
+      <button id="logoutBtn" class="secondary">Abmelden</button>
+    </div>
   </header>
 
-  <main>
+  <main id="authSection" hidden>
+    <section class="card auth-card">
+      <h2 id="authTitle">Anmelden</h2>
+      <p id="authMessage">Melde dich mit deinem Namen und Passwort an.</p>
+      <div class="auth-modes">
+        <button id="loginMode" type="button" class="secondary">Anmelden</button>
+        <button id="registerMode" type="button" class="secondary">Konto erstellen</button>
+      </div>
+      <form id="authForm">
+        <label>Name
+          <input id="displayName" type="text" maxlength="50" autocomplete="username" required>
+        </label>
+        <label>Passwort
+          <input id="password" type="password" minlength="12" maxlength="256" autocomplete="current-password" required>
+        </label>
+        <label id="inviteLabel" hidden>Gruppeneinladungscode
+          <input id="inviteCode" type="password" autocomplete="off">
+        </label>
+        <button id="authSubmit" type="submit">Anmelden</button>
+      </form>
+      <p class="hint">Passwort vergessen? Ein App-Admin kann es zurücksetzen.</p>
+    </section>
+  </main>
+
+  <main id="appContent" hidden>
     <section class="card" id="planSection">
       <h2>Plan</h2>
       <div id="planTable" class="table-wrap"></div>
@@ -34,6 +62,19 @@
         <strong>–</strong> = neutral (wie 2) · Einstellungen gelten <strong>für jede Woche</strong>
       </p>
       <div id="editGrid" class="table-wrap"></div>
+    </section>
+
+    <section class="card" id="passwordSection">
+      <h2>Passwort ändern</h2>
+      <form id="passwordForm" class="account-form">
+        <label>Aktuelles Passwort
+          <input id="currentPassword" type="password" autocomplete="current-password" required>
+        </label>
+        <label>Neues Passwort (mindestens 12 Zeichen)
+          <input id="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+        </label>
+        <button type="submit">Passwort speichern</button>
+      </form>
     </section>
 
     <section class="card" id="personsSection">

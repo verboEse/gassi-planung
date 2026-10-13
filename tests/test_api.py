@@ -9,7 +9,7 @@ from app.main import create_app, week_dates
 
 @pytest.fixture()
 def client(tmp_path):
-    app = create_app(str(tmp_path / "test.sqlite3"))
+    app = create_app(str(tmp_path / "test.sqlite3"), auth_enabled=False)
     with TestClient(app) as c:
         yield c
 

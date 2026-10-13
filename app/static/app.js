@@ -4,8 +4,11 @@ const state = {
   year: null,        // null = aktuelle Woche (Server entscheidet)
   week: null,
   data: null,
+  me: null,
   selectedPerson: null,
 };
+
+let authMode = "login";
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const PREF_OPTIONS = [
@@ -39,7 +42,9 @@ async function api(path, options) {
   if (!res.ok) {
     let msg = `${res.status}`;
     try { msg = (await res.json()).detail || msg; } catch { /* ignore */ }
-    throw new Error(msg);
+    const error = new Error(msg);
+    error.status = res.status;
+    throw error;
   }
   return res.status === 204 ? null : res.json();
 }
@@ -60,7 +65,9 @@ async function loadWeek() {
   state.data = data;
   state.year = data.year;
   state.week = data.week;
-  if (!data.persons.some(p => p.id === state.selectedPerson)) {
+  if (state.me) {
+    state.selectedPerson = state.me.person.id;
+  } else if (!data.persons.some(p => p.id === state.selectedPerson)) {
     state.selectedPerson = data.persons.length ? data.persons[0].id : null;
   }
   renderAll();
@@ -91,7 +98,7 @@ function renderPlan() {
   const { plan, persons } = state.data;
   const wrap = document.getElementById("planTable");
   if (!persons.length) {
-    wrap.innerHTML = `<p class="empty">Noch keine Personen angelegt – unten hinzufügen.</p>`;
+    wrap.innerHTML = `<p class="empty">Noch keine Teilnehmer registriert.</p>`;
     return;
   }
   const label = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
@@ -124,7 +131,10 @@ function renderStats() {
 
 function renderTabs() {
   const el = document.getElementById("personTabs");
-  const { persons } = state.data;
+  const persons = state.me
+    ? state.data.persons.filter(p => p.id === state.me.person.id)
+    : state.data.persons;
+  el.hidden = Boolean(state.me);
   if (!persons.length) { el.innerHTML = ""; return; }
   el.innerHTML = "";
   for (const p of persons) {
@@ -142,10 +152,10 @@ function renderCalLink() {
   const el = document.getElementById("calLink");
   const p = state.data.persons.find(x => x.id === state.selectedPerson);
   if (!p) { el.innerHTML = ""; return; }
-  const url = `${location.origin}/api/calendar/${p.id}.ics`;
+  const url = state.me?.calendar_url || `${location.origin}/api/calendar/${p.id}.ics`;
   el.innerHTML = "";
   const label = document.createElement("span");
-  label.textContent = `📅 iCal-Feed für ${p.name}: `;
+  label.textContent = `iCal-Feed für ${p.name}: `;
   const input = document.createElement("input");
   input.type = "text";
   input.readOnly = true;
@@ -157,19 +167,50 @@ function renderCalLink() {
   copyBtn.onclick = async () => {
     try {
       await navigator.clipboard.writeText(url);
-      copyBtn.textContent = "✓ Kopiert";
+      copyBtn.textContent = "Kopiert";
     } catch {
       input.select();
       document.execCommand("copy");
-      copyBtn.textContent = "✓ Kopiert";
+      copyBtn.textContent = "Kopiert";
     }
     setTimeout(() => { copyBtn.textContent = "Kopieren"; }, 2000);
   };
-  const dl = document.createElement("a");
-  dl.href = url;
-  dl.textContent = "Download";
-  dl.className = "cal-download";
-  el.append(label, input, copyBtn, dl);
+  const subscriptionUrl = new URL(url);
+  const subscribe = document.createElement(subscriptionUrl.protocol === "https:" ? "a" : "button");
+  subscribe.className = "cal-download";
+  if (subscriptionUrl.protocol === "https:") {
+    subscribe.href = url.replace(/^https:/, "webcal:");
+    subscribe.textContent = "Im Kalender abonnieren";
+  } else {
+    subscribe.type = "button";
+    subscribe.textContent = "Lokales Abo einrichten";
+    subscribe.onclick = async () => {
+      const message = "URL kopiert. In Apple Kalender: Ablage > Neues Kalenderabo.";
+      try {
+        await navigator.clipboard.writeText(url);
+      } catch {
+        input.select();
+        document.execCommand("copy");
+      }
+      toast(message);
+    };
+  }
+  el.append(label, input, copyBtn, subscribe);
+  if (state.me) {
+    const rotate = document.createElement("button");
+    rotate.className = "secondary";
+    rotate.textContent = "Link erneuern";
+    rotate.title = "Der bisherige Abo-Link wird dadurch ungültig";
+    rotate.onclick = async () => {
+      if (!confirm("Abo-Link erneuern? Der bisherige Kalender-Link wird ungültig.")) return;
+      try {
+        const result = await api("/api/me/calendar-token", { method: "POST" });
+        state.me.calendar_url = result.calendar_url;
+        renderCalLink();
+      } catch (e) { toast(e.message); }
+    };
+    el.appendChild(rotate);
+  }
 }
 
 function renderGrid() {
@@ -216,6 +257,7 @@ function renderGrid() {
 
 function renderPersonList() {
   const el = document.getElementById("personList");
+  document.getElementById("personsSection").hidden = Boolean(state.me);
   const { persons } = state.data;
   el.innerHTML = "";
   if (!persons.length) {
@@ -282,4 +324,96 @@ document.getElementById("addPersonForm").onsubmit = async (ev) => {
   } catch (e) { toast(e.message); }
 };
 
-loadWeek().catch(e => toast(e.message));
+function setAuthMode(mode) {
+  authMode = mode;
+  const registering = mode === "register";
+  document.getElementById("authTitle").textContent = registering ? "Konto erstellen" : "Anmelden";
+  document.getElementById("authMessage").textContent = registering
+    ? "Lege ein Konto mit dem Gruppeneinladungscode an."
+    : "Melde dich mit deinem Namen und Passwort an.";
+  document.getElementById("inviteLabel").hidden = !registering;
+  document.getElementById("password").autocomplete = registering ? "new-password" : "current-password";
+  document.getElementById("authSubmit").textContent = registering ? "Konto erstellen" : "Anmelden";
+  document.getElementById("loginMode").classList.toggle("active", !registering);
+  document.getElementById("registerMode").classList.toggle("active", registering);
+}
+
+document.getElementById("loginMode").onclick = () => setAuthMode("login");
+document.getElementById("registerMode").onclick = () => setAuthMode("register");
+
+document.getElementById("authForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  const registering = authMode === "register";
+  const payload = {
+    display_name: document.getElementById("displayName").value.trim(),
+    password: document.getElementById("password").value,
+  };
+  if (registering) payload.invite_code = document.getElementById("inviteCode").value;
+  try {
+    await api(registering ? "/auth/register" : "/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    location.reload();
+  } catch (e) { toast(e.message); }
+};
+
+document.getElementById("passwordForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  try {
+    await api("/api/me/password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        current_password: document.getElementById("currentPassword").value,
+        new_password: document.getElementById("newPassword").value,
+      }),
+    });
+    ev.target.reset();
+    toast("Passwort geändert");
+  } catch (e) { toast(e.message); }
+};
+
+document.getElementById("logoutBtn").onclick = async () => {
+  try {
+    await api("/auth/logout", { method: "POST" });
+    location.reload();
+  } catch (e) { toast(e.message); }
+};
+
+async function initialize() {
+  const auth = document.getElementById("authSection");
+  const content = document.getElementById("appContent");
+  const nav = document.getElementById("weekNav");
+  const accountInfo = document.getElementById("accountInfo");
+  try {
+    state.me = await api("/api/me");
+    auth.hidden = true;
+    content.hidden = false;
+    nav.hidden = false;
+    accountInfo.hidden = false;
+    document.getElementById("accountName").textContent = state.me.person.name;
+  } catch (e) {
+    if (e.status === 401) {
+      auth.hidden = false;
+      content.hidden = true;
+      nav.hidden = true;
+      accountInfo.hidden = true;
+      return;
+    } else if (e.status === 404) {
+      state.me = null;
+      auth.hidden = true;
+      content.hidden = false;
+      nav.hidden = false;
+      accountInfo.hidden = true;
+    } else {
+      toast(e.message);
+      return;
+    }
+  }
+  loadWeek().catch(e => toast(e.message));
+}
+
+setAuthMode("login");
+initialize();
