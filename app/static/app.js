@@ -9,6 +9,7 @@ const state = {
 };
 
 let authMode = "login";
+let weekRequest = null;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const PREF_OPTIONS = [
@@ -59,18 +60,21 @@ function toast(msg) {
 
 // ---------- Laden ------------------------------------------------------------
 
-async function loadWeek() {
+function loadWeek() {
+  if (weekRequest) return weekRequest;
   const params = state.year && state.week ? `?year=${state.year}&week=${state.week}` : "";
-  const data = await api(`/api/week${params}`);
-  state.data = data;
-  state.year = data.year;
-  state.week = data.week;
-  if (state.me) {
-    state.selectedPerson = state.me.person.id;
-  } else if (!data.persons.some(p => p.id === state.selectedPerson)) {
-    state.selectedPerson = data.persons.length ? data.persons[0].id : null;
-  }
-  renderAll();
+  weekRequest = api(`/api/week${params}`).then(data => {
+    state.data = data;
+    state.year = data.year;
+    state.week = data.week;
+    if (state.me) {
+      state.selectedPerson = state.me.person.id;
+    } else if (!data.persons.some(p => p.id === state.selectedPerson)) {
+      state.selectedPerson = data.persons.length ? data.persons[0].id : null;
+    }
+    renderAll();
+  }).finally(() => { weekRequest = null; });
+  return weekRequest;
 }
 
 function shiftWeek(days) {
@@ -304,6 +308,14 @@ async function removePerson(p) {
 document.getElementById("prevWeek").onclick = () => shiftWeek(-7);
 document.getElementById("nextWeek").onclick = () => shiftWeek(7);
 document.getElementById("todayBtn").onclick = () => { state.year = null; state.week = null; loadWeek().catch(e => toast(e.message)); };
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) loadWeek().catch(() => {});
+});
+// ponytail: 10-second polling; use server push only if this delay becomes too noticeable.
+setInterval(() => {
+  if (!document.hidden) loadWeek().catch(() => {});
+}, 10_000);
 
 document.getElementById("addPersonForm").onsubmit = async (ev) => {
   ev.preventDefault();
