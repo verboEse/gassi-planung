@@ -96,6 +96,28 @@ passwortlose Konten migriert; ein Admin muss zuerst ein Passwort setzen. Für
 einen frischen Start auf dem Server `GASSI_DB` auf eine neue Datenbankdatei
 setzen; die bisherige Datenbank bleibt unangetastet.
 
+### Teilnehmerkonto löschen
+
+Es gibt keine Selbstbedienungs-Löschung. Bei aktivierter Anmeldung ist auch die
+`DELETE /api/persons/{id}`-Route gesperrt. Ein Administrator mit Serverzugriff
+kann das Konto in der SQLite-Datenbank entfernen. Dabei werden durch
+Fremdschlüssel-Kaskaden auch die Prioritäten und der persönliche Kalender-Feed
+gelöscht. Die Aktion ist endgültig.
+
+Im Docker-Betrieb zuerst eine Sicherung erstellen und die exakte Schreibweise
+des Benutzernamens prüfen:
+
+```bash
+docker compose cp app:/data/gassi.sqlite3 ./gassi-backup.sqlite3
+docker compose exec app python -c 'import sqlite3; c=sqlite3.connect("/data/gassi.sqlite3"); print(c.execute("SELECT username FROM accounts").fetchall())'
+```
+
+Dann `Jan` durch den gewünschten Benutzernamen ersetzen:
+
+```bash
+docker compose exec app python -c 'import sqlite3; c=sqlite3.connect("/data/gassi.sqlite3"); c.execute("PRAGMA foreign_keys=ON"); c.execute("DELETE FROM persons WHERE id=(SELECT person_id FROM accounts WHERE username=?)", ("Jan",)); c.commit()'
+```
+
 Jeder Kalender-Link ist ein persönliches Bearer-Geheimnis. Wer ihn kennt, kann
 den persönlichen Feed lesen; „Link erneuern“ widerruft den alten Link. Der
 Kalender-Knopf kopiert die URL. In Apple Kalender das Abo über
