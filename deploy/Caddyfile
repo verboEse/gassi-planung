@@ -1,4 +1,0 @@
-gassiplan.verboese.de {
-    encode zstd gzip
-    reverse_proxy app:8585
-}

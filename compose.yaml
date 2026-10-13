@@ -9,22 +9,16 @@ services:
       - "8585"
     volumes:
       - gassi-data:/data
+    networks:
+      proxy:
+        aliases:
+          - gassi-planung-app
     restart: unless-stopped
 
-  caddy:
-    image: caddy:2
-    depends_on:
-      - app
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    restart: unless-stopped
+networks:
+  proxy:
+    external: true
+    name: traefik_proxy
 
 volumes:
   gassi-data:
-  caddy-data:
-  caddy-config:

@@ -42,28 +42,35 @@ Der Datenbankpfad ist per Umgebungsvariable `GASSI_DB` konfigurierbar
 
 ## Docker-Veröffentlichung
 
-`compose.yaml` startet die App intern und Caddy als einzigen öffentlich
-veröffentlichten Dienst. Caddy stellt automatisch HTTPS für
-`gassiplan.verboese.de` bereit. Dafür müssen DNS auf den Docker-Host zeigen und
-TCP-Port 80 sowie 443 von außen erreichbar sein. Die Teleport-Verbindung zu
-`pam.dreyers.eu` bleibt für die Administration des Hosts; der öffentliche
-App-Traffic läuft über Caddy, nicht über Teleport.
+`compose.yaml` veröffentlicht die App nicht direkt. Sie hängt sich in das
+bestehende Docker-Netz `traefik_proxy`; Traefik leitet
+`gassiplan.verboese.de` über den EntryPoint `websecure` an die App weiter und
+verwendet den vorhandenen ACME-Resolver `myresolver`. Teleport bleibt für die
+Host-Administration; der öffentliche App-Traffic läuft über Traefik, nicht
+über Teleport.
+
+Da in der vorhandenen Traefik-Konfiguration der Docker-Provider deaktiviert
+ist, muss der Router aus [`deploy/traefik-gassi.yaml`](./deploy/traefik-gassi.yaml)
+in die bestehende `traefik/traefik.yaml` unter `http:` übernommen werden. Den
+vorhandenen `tls:`-Abschnitt dabei beibehalten. Die Datei wird über den
+aktivierten File-Provider geladen.
 
 Vor dem Start `.env.example` nach `.env` kopieren und beide Werte durch
 zufällige Geheimnisse ersetzen (jeweils z. B. mit `openssl rand -hex 32`
 erzeugen). `GASSI_SESSION_SECRET` dauerhaft behalten; den Einladungscode an die
 Teilnehmer weitergeben. `.env` wird weder ins Image kopiert noch von Git erfasst.
 Der Container startet mit einer neuen, persistenten Docker-Datenbank; die lokale
-SQLite-Datei bleibt unverändert.
+SQLite-Datei bleibt unverändert. DNS für `gassiplan.verboese.de` muss auf den
+Docker-Host zeigen.
 
 ```bash
 docker compose up -d --build
-docker compose logs -f
+docker compose logs -f app
 docker compose down
 ```
 
-`docker compose down` erhält die Datenvolumes. `docker compose down -v` löscht
-sie samt Datenbank und Caddy-Zertifikaten. Passwort-Reset im Container:
+`docker compose down` erhält das Datenvolume. `docker compose down -v` löscht
+auch die Container-Datenbank. Passwort-Reset im Container:
 `docker compose exec app python -m app.admin reset-password "Teilnehmername"`.
 
 ### Konten einrichten

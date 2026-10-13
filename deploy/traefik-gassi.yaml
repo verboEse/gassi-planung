@@ -1,0 +1,14 @@
+http:
+  routers:
+    gassi-planung:
+      rule: Host(`gassiplan.verboese.de`)
+      entryPoints:
+        - websecure
+      service: gassi-planung
+      tls:
+        certResolver: myresolver
+  services:
+    gassi-planung:
+      loadBalancer:
+        servers:
+          - url: http://gassi-planung-app:8585
