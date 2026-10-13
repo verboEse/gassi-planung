@@ -176,25 +176,22 @@ function renderCalLink() {
     setTimeout(() => { copyBtn.textContent = "Kopieren"; }, 2000);
   };
   const subscriptionUrl = new URL(url);
-  const subscribe = document.createElement(subscriptionUrl.protocol === "https:" ? "a" : "button");
+  const subscribe = document.createElement("button");
+  subscribe.type = "button";
   subscribe.className = "cal-download";
-  if (subscriptionUrl.protocol === "https:") {
-    subscribe.href = url.replace(/^https:/, "webcal:");
-    subscribe.textContent = "Im Kalender abonnieren";
-  } else {
-    subscribe.type = "button";
-    subscribe.textContent = "Lokales Abo einrichten";
-    subscribe.onclick = async () => {
-      const message = "URL kopiert. In Apple Kalender: Ablage > Neues Kalenderabo.";
-      try {
-        await navigator.clipboard.writeText(url);
-      } catch {
-        input.select();
-        document.execCommand("copy");
-      }
-      toast(message);
-    };
-  }
+  subscribe.textContent = subscriptionUrl.protocol === "https:"
+    ? "HTTPS-Abo-URL kopieren"
+    : "Lokales Abo einrichten";
+  subscribe.onclick = async () => {
+    const message = "URL kopiert. In Apple Kalender: Ablage > Neues Kalenderabo.";
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      input.select();
+      document.execCommand("copy");
+    }
+    toast(message);
+  };
   el.append(label, input, copyBtn, subscribe);
   if (state.me) {
     const rotate = document.createElement("button");

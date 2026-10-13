@@ -98,10 +98,10 @@ setzen; die bisherige Datenbank bleibt unangetastet.
 
 Jeder Kalender-Link ist ein persönliches Bearer-Geheimnis. Wer ihn kennt, kann
 den persönlichen Feed lesen; „Link erneuern“ widerruft den alten Link. Der
-Ein-Klick-Abo-Knopf benötigt HTTPS. Lokal über HTTP kopiert er die URL zum
-manuellen Einrichten in Apple Kalender (**Ablage → Neues Kalenderabo**). Apple
-Kalender ruft abonnierte Feeds selbstständig ab; der Aktualisierungszeitpunkt
-wird von Apple Kalender bestimmt.
+Kalender-Knopf kopiert die URL. In Apple Kalender das Abo über
+**Ablage → Neues Kalenderabo** mit dieser URL einrichten. Apple Kalender ruft
+abonnierte Feeds selbstständig ab; der Aktualisierungszeitpunkt wird von Apple
+Kalender bestimmt.
 
 ## Wie der Plan berechnet wird
 
