@@ -79,9 +79,13 @@ class TestPrefs:
         laura = add_person(client, "Laura")
         before = client.get("/api/week?year=2026&week=42").json()["plan"]
 
-        assert client.put("/api/prefs", json={
+        changed = client.put("/api/prefs", json={
             "person_id": jan["id"], "weekday": 2, "slot": "evening", "value": -1,
-        }).status_code == 200
+        })
+        assert changed.status_code == 200
+        assert changed.json() == {
+            "ok": True, "changed": True, "effective_year": 2026, "effective_week": 43,
+        }
         this_week = client.get("/api/week?year=2026&week=42").json()
         next_week = client.get("/api/week?year=2026&week=43").json()
         assert this_week["plan"] == before

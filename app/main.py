@@ -391,7 +391,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         frozen_plan = build_week(
             freeze_year, freeze_week, redact_preferences=False
         )["plan"]
-        db.set_pref(
+        changed = db.set_pref(
             body.person_id,
             body.weekday,
             body.slot,
@@ -399,7 +399,14 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             freeze_week=(freeze_year, freeze_week),
             frozen_plan=frozen_plan,
         )
-        return {"ok": True}
+        next_monday = dt_date.fromisocalendar(freeze_year, freeze_week, 1) + timedelta(days=7)
+        effective = next_monday.isocalendar()
+        return {
+            "ok": True,
+            "changed": changed,
+            "effective_year": effective.year,
+            "effective_week": effective.week,
+        }
 
     # --- Frontend -------------------------------------------------------------
 

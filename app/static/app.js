@@ -60,9 +60,12 @@ function toast(msg) {
 
 // ---------- Laden ------------------------------------------------------------
 
-function loadWeek() {
-  if (weekRequest) return weekRequest;
+async function loadWeek(force = false) {
   const params = state.year && state.week ? `?year=${state.year}&week=${state.week}` : "";
+  if (weekRequest) {
+    if (!force) return weekRequest;
+    await weekRequest.catch(() => {});
+  }
   weekRequest = api(`/api/week${params}`).then(data => {
     state.data = data;
     state.year = data.year;
@@ -283,12 +286,19 @@ function renderPersonList() {
 
 async function setPref(personId, weekday, slot, value) {
   try {
-    await api("/api/prefs", {
+    const result = await api("/api/prefs", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ person_id: personId, weekday, slot, value }),
     });
-    await loadWeek(); // Show saved preferences and the frozen active-week plan
+    if (result.changed) {
+      state.year = result.effective_year;
+      state.week = result.effective_week;
+    }
+    await loadWeek(true);
+    if (result.changed) {
+      toast(`Änderung gilt ab KW ${result.effective_week}/${result.effective_year}; der Plan dieser Woche bleibt unverändert.`);
+    }
   } catch (e) {
     toast(e.message);
     await loadWeek().catch(() => {});
