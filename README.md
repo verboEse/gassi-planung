@@ -12,13 +12,14 @@ Wochenplan** und stellt ihn als Tabelle dar.
 - 📅 Wochenansicht (Mo–So) mit drei Slots pro Tag, beliebig vor/zurück blättern
 - 🙋 Personenverwaltung mit Farben
 - 🎚️ Prioritäten pro Person & Slot: **3** = gern · **2** = ok · **1** = nur wenn nötig · **🚫** = nicht zu Hause.
-  **Allgemeingültig pro Wochentag** (Mo–So) – einmal einstellen, gilt für jede Woche
+  Einträge gelten für den Wochentag in zukünftigen Wochen; die erste Änderung
+  einer Woche friert deren Plan bis Sonntag ein. Neue Prioritäten gelten ab Montag.
 - 🧮 Optimale Planberechnung per ILP (ganzzahlige Optimierung, CBC-Solver via PuLP):
   - Blockierungen sind harte Regeln
   - Maximale Gesamt-Priorität
   - Weiche Fairness: Einsätze werden über die Woche möglichst gleichmäßig verteilt
   - Slots, an denen **alle** blockiert haben, werden als „⚠️ frei“ markiert statt zu crashen
-- ⚡ Plan wird bei jeder Änderung live neu berechnet
+- ⚡ Präferenzänderungen aktualisieren kommende Wochen; der aktive Wochenplan bleibt unverändert
 - 🔐 Jeder Teilnehmer erstellt mit Gruppeneinladungscode ein eigenes Konto
   mit Passwort und pflegt nur die eigenen Prioritäten.
 - 📅 Persönlicher iCal-Abo-Link pro Teilnehmer für Apple Kalender und andere
@@ -117,6 +118,11 @@ Dann `Jan` durch den gewünschten Benutzernamen ersetzen:
 ```bash
 docker compose exec app python -c 'import sqlite3; c=sqlite3.connect("/data/gassi.sqlite3"); c.execute("PRAGMA foreign_keys=ON"); c.execute("DELETE FROM persons WHERE id=(SELECT person_id FROM accounts WHERE username=?)", ("Jan",)); c.commit()'
 ```
+
+Der Kalender-Feed liefert Termine dieser Woche als einzelne Events und lässt
+die Termine ab nächster Woche nach den aktuellen Präferenzen wöchentlich
+wiederkehren. So wirken Änderungen weder im aktuellen Wochenplan noch im
+Kalender vor dem nächsten Montag.
 
 Jeder Kalender-Link ist ein persönliches Bearer-Geheimnis. Wer ihn kennt, kann
 den persönlichen Feed lesen; „Link erneuern“ widerruft den alten Link. Der

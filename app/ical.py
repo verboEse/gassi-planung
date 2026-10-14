@@ -67,15 +67,9 @@ def build_ics(
     person_name: str,
     assignments: list[Assignment],
     recurring: bool = True,
+    future_assignments: list[Assignment] | None = None,
 ) -> str:
-    """Baut den kompletten Kalender (VCALENDAR) für eine Person.
-
-    :param assignments: nur die Slots, die dieser Person zugewiesen sind
-        (eine Referenzwoche; bei recurring=True reicht genau eine Woche)
-    :param recurring: True = wöchentlich wiederkehrende Events (RRULE:FREQ=WEEKLY,
-        ohne Enddatum) mit wochentagsbasierten stabilen UIDs; False = einzelne
-        datierte Events mit datumsbasierten UIDs
-    """
+    """Baut Kalendertermine für eine Person, optional mit separater Folgewoche."""
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
@@ -85,30 +79,36 @@ def build_ics(
         f"X-WR-CALNAME:{escape_text(f'Gassi – {person_name}')}",
     ]
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    for a in sorted(assignments, key=lambda x: (x.date, x.slot)):
-        (sh, sm), (eh, em) = SLOT_TIMES[a.slot]
-        d = dt_date.fromisoformat(a.date)
-        start = datetime(d.year, d.month, d.day, sh, sm, tzinfo=TZ).astimezone(timezone.utc)
-        end = datetime(d.year, d.month, d.day, eh, em, tzinfo=TZ).astimezone(timezone.utc)
-        if recurring:
-            uid = f"gassi-wd{d.isoweekday()}-{a.slot}-{person_id}@gassi-planung"
-            description = f"Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – wöchentlich, zugewiesen an {person_name}"
-        else:
-            uid = f"gassi-{a.date}-{a.slot}-{person_id}@gassi-planung"
-            description = f"Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – zugewiesen an {person_name}"
-        lines += [
-            "BEGIN:VEVENT",
-            f"UID:{uid}",
-            f"DTSTAMP:{stamp}",
-            f"DTSTART:{start:%Y%m%dT%H%M%SZ}",
-            f"DTEND:{end:%Y%m%dT%H%M%SZ}",
-        ]
-        if recurring:
-            lines.append("RRULE:FREQ=WEEKLY")
-        lines += [
-            f"SUMMARY:{escape_text(f'🐕 Gassi – {SLOT_LABELS[a.slot]}')}",
-            f"DESCRIPTION:{escape_text(description)}",
-            "END:VEVENT",
-        ]
+    event_sets = (
+        [(assignments, recurring)]
+        if future_assignments is None
+        else [(assignments, False), (future_assignments, True)]
+    )
+    for events, repeats in event_sets:
+        for a in sorted(events, key=lambda x: (x.date, x.slot)):
+            (sh, sm), (eh, em) = SLOT_TIMES[a.slot]
+            d = dt_date.fromisoformat(a.date)
+            start = datetime(d.year, d.month, d.day, sh, sm, tzinfo=TZ).astimezone(timezone.utc)
+            end = datetime(d.year, d.month, d.day, eh, em, tzinfo=TZ).astimezone(timezone.utc)
+            if repeats:
+                uid = f"gassi-wd{d.isoweekday()}-{a.slot}-{person_id}@gassi-planung"
+                description = f"Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – wöchentlich, zugewiesen an {person_name}"
+            else:
+                uid = f"gassi-{a.date}-{a.slot}-{person_id}@gassi-planung"
+                description = f"Gassi-Runde {SLOT_LABELS[a.slot]} (Priorität {a.pref}) – zugewiesen an {person_name}"
+            lines += [
+                "BEGIN:VEVENT",
+                f"UID:{uid}",
+                f"DTSTAMP:{stamp}",
+                f"DTSTART:{start:%Y%m%dT%H%M%SZ}",
+                f"DTEND:{end:%Y%m%dT%H%M%SZ}",
+            ]
+            if repeats:
+                lines.append("RRULE:FREQ=WEEKLY")
+            lines += [
+                f"SUMMARY:{escape_text(f'🐕 Gassi – {SLOT_LABELS[a.slot]}')}",
+                f"DESCRIPTION:{escape_text(description)}",
+                "END:VEVENT",
+            ]
     lines.append("END:VCALENDAR")
     return "\r\n".join(fold_line(line) for line in lines) + "\r\n"

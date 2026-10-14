@@ -229,7 +229,7 @@ function renderGrid() {
   table.innerHTML = `<thead><tr><th>Tag</th>${SLOT_KEYS.map(s => `<th>${label[s]}</th>`).join("")}</tr></thead>`;
   const tbody = document.createElement("tbody");
   plan.days.forEach((day, idx) => {
-    const wd = String(idx + 1); // 1=Mo … 7=So – Prioritäten gelten allgemeingültig pro Wochentag
+    const wd = String(idx + 1); // 1=Mo … 7=So; changes take effect next week
     const tr = document.createElement("tr");
     tr.innerHTML = `<td class="day-label">${day.weekday}<span class="date">${fmtDate(day.date)}</span></td>`;
     for (const s of SLOT_KEYS) {
@@ -288,7 +288,7 @@ async function setPref(personId, weekday, slot, value) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ person_id: personId, weekday, slot, value }),
     });
-    await loadWeek(); // Plan live neu berechnen
+    await loadWeek(); // Show saved preferences and the frozen active-week plan
   } catch (e) {
     toast(e.message);
     await loadWeek().catch(() => {});

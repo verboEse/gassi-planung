@@ -1,10 +1,7 @@
-"""SQLite-Persistenz für die Gassi-Planung (Stdlib sqlite3, ohne ORM).
-
-Prioritäten sind **allgemeingültig pro Wochentag** (ISO: 1=Montag … 7=Sonntag)
-und gelten damit für jede Kalenderwoche gleichermaßen.
-"""
+"""SQLite-Persistenz für Gassi-Planung und eingefrorene Wochenpläne."""
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import date as dt_date
 from pathlib import Path
@@ -33,6 +30,15 @@ CREATE TABLE IF NOT EXISTS accounts (
     person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL
+)
+"""
+
+WEEKLY_PLANS_DDL = """
+CREATE TABLE IF NOT EXISTS weekly_plans (
+    year INTEGER NOT NULL,
+    week INTEGER NOT NULL,
+    plan_json TEXT NOT NULL,
+    PRIMARY KEY (year, week)
 )
 """
 
@@ -83,6 +89,7 @@ class Database:
                 )
             else:
                 con.execute(ACCOUNTS_DDL)
+            con.execute(WEEKLY_PLANS_DDL)
             cols = {r[1] for r in con.execute("PRAGMA table_info(prefs)")}
             if cols and "date" in cols:
                 # Migration: alte datumsbasierte Tabelle (person_id, date, slot, value)
@@ -244,13 +251,32 @@ class Database:
     # --- Prioritäten (allgemeingültig pro Wochentag) ------------------------
 
     def set_pref(
-        self, person_id: int, weekday: int, slot: str, value: int | None
-    ) -> None:
-        """Setzt eine Priorität für einen Wochentag (1=Mo … 7=So).
-
-        value=None löscht den Eintrag (zurück zu neutral).
-        """
+        self,
+        person_id: int,
+        weekday: int,
+        slot: str,
+        value: int | None,
+        *,
+        freeze_week: tuple[int, int] | None = None,
+        frozen_plan: dict | None = None,
+    ) -> bool:
+        """Setzt eine Wochentagspriorität und friert optional den aktiven Plan ein."""
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT value FROM prefs WHERE person_id = ? AND weekday = ? AND slot = ?",
+                (person_id, weekday, slot),
+            ).fetchone()
+            if (row["value"] if row else None) == value:
+                return False
+            if freeze_week and frozen_plan is not None:
+                con.execute(
+                    """
+                    INSERT OR IGNORE INTO weekly_plans (year, week, plan_json)
+                    VALUES (?, ?, ?)
+                    """,
+                    (*freeze_week, json.dumps(frozen_plan, ensure_ascii=False)),
+                )
             if value is None:
                 con.execute(
                     "DELETE FROM prefs WHERE person_id = ? AND weekday = ? AND slot = ?",
@@ -266,6 +292,15 @@ class Database:
                     """,
                     (person_id, weekday, slot, value),
                 )
+            return True
+
+    def frozen_plan(self, year: int, week: int) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT plan_json FROM weekly_plans WHERE year = ? AND week = ?",
+                (year, week),
+            ).fetchone()
+        return json.loads(row["plan_json"]) if row else None
 
     def prefs_all(self) -> dict[tuple[int, str, int], int]:
         """Liefert {(weekday, slot, person_id): value} aller Prioritäten."""

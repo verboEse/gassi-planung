@@ -7,6 +7,7 @@ from urllib.parse import urlsplit
 from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
 
+from app import main as main_module
 from app.auth import hash_password, verify_password
 from app.db import Database
 from app.main import create_app
@@ -20,6 +21,7 @@ def test_password_hash_uses_scrypt_and_verifies():
 
 
 def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
     secret = "test-session-secret-that-is-long-enough"
     monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
     monkeypatch.setenv("GASSI_BASE_URL", "https://gassiplan.example")
@@ -41,6 +43,18 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
         assert week_response.status_code == 200, week_response.text
         week = week_response.json()
         assert list(week["prefs"]) == [str(owner["id"])]
+        assert client.put("/api/prefs", json={
+            "person_id": owner["id"], "weekday": 7, "slot": "evening", "value": 3,
+        }).status_code == 200
+        frozen_week = client.get("/api/week?year=2026&week=42").json()
+        assert frozen_week["plan"] == week["plan"]
+        assert frozen_week["prefs"][str(owner["id"])]["7"]["evening"] == 3
+        assert all(
+            "pref" not in slot or slot["pref"] is None
+            for day in frozen_week["plan"]["days"]
+            for slot in day["slots"].values()
+            if slot.get("person_id") == other["id"]
+        )
         other_slots = [
             slot
             for day in week["plan"]["days"]

@@ -4,6 +4,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from app import main as main_module
 from app.ical import build_ics, escape_text, fold_line
 from app.main import create_app
 from app.scheduler import Assignment
@@ -99,7 +100,8 @@ class TestBuildIcs:
 
 
 @pytest.fixture()
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
     app = create_app(str(tmp_path / "test.sqlite3"), auth_enabled=False)
     with TestClient(app) as c:
         yield c
@@ -121,9 +123,8 @@ class TestCalendarEndpoint:
         assert res.headers["content-type"].startswith("text/calendar")
         body = res.text
         assert "X-WR-CALNAME:Gassi – Jan" in body
-        # Eine Referenzwoche, fair verteilt auf 3 Personen: 7 eigene Slots,
-        # jeweils als wöchentlich wiederkehrendes Event ohne Enddatum
-        assert body.count("BEGIN:VEVENT") == 7
+        # Aktuelle Woche einmalig, Folgewochen als wiederkehrende Termine.
+        assert body.count("BEGIN:VEVENT") == 14
         assert body.count("RRULE:FREQ=WEEKLY") == 7
         assert "UNTIL" not in body
         assert "COUNT" not in body
@@ -134,16 +135,30 @@ class TestCalendarEndpoint:
     def test_unknown_person_404(self, client):
         assert client.get("/api/calendar/999.ics").status_code == 404
 
-    def test_blocked_slots_not_in_feed(self, client):
+    def test_blocked_slots_apply_to_calendar_from_next_week(self, client):
         p1 = add_person(client, "Jan")
         p2 = add_person(client, "Laura")
-        # Jan blockiert alles (alle Wochentage) -> sein Feed hat 0 Events, Lauras alle
+        baseline = client.get("/api/week?year=2026&week=42").json()["plan"]
         for wd in range(1, 8):
             for slot in ("morning", "noon", "evening"):
                 client.put("/api/prefs", json={
                     "person_id": p1["id"], "weekday": wd, "slot": slot, "value": -1,
                 })
-        res = client.get(f"/api/calendar/{p1['id']}.ics?weeks=1")
-        assert res.text.count("BEGIN:VEVENT") == 0
-        res2 = client.get(f"/api/calendar/{p2['id']}.ics?weeks=1")
-        assert res2.text.count("BEGIN:VEVENT") == 21  # ganze Woche, je 1 Recurring-Event pro Slot
+
+        jan_now = sum(
+            cell.get("person_id") == p1["id"]
+            for day in baseline["days"]
+            for cell in day["slots"].values()
+        )
+        jan_feed = client.get(f"/api/calendar/{p1['id']}.ics").text
+        assert jan_feed.count("BEGIN:VEVENT") == jan_now
+        assert "RRULE:FREQ=WEEKLY" not in jan_feed
+
+        laura_now = sum(
+            cell.get("person_id") == p2["id"]
+            for day in baseline["days"]
+            for cell in day["slots"].values()
+        )
+        laura_feed = client.get(f"/api/calendar/{p2['id']}.ics").text
+        assert laura_feed.count("BEGIN:VEVENT") == laura_now + 21
+        assert laura_feed.count("RRULE:FREQ=WEEKLY") == 21
