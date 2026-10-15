@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from datetime import date as dt_date
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 PERSONS_DDL = """
@@ -29,7 +30,20 @@ ACCOUNTS_DDL = """
 CREATE TABLE IF NOT EXISTS accounts (
     person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
     username TEXT NOT NULL UNIQUE,
-    password_hash TEXT NOT NULL
+    password_hash TEXT NOT NULL,
+    is_admin INTEGER NOT NULL DEFAULT 0,
+    auth_version INTEGER NOT NULL DEFAULT 1
+)
+"""
+
+ACTIVITY_DDL = """
+CREATE TABLE IF NOT EXISTS activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actor_username TEXT NOT NULL,
+    action TEXT NOT NULL,
+    subject_username TEXT NOT NULL,
+    details_json TEXT NOT NULL DEFAULT '{}',
+    occurred_at TEXT NOT NULL
 )
 """
 
@@ -89,6 +103,12 @@ class Database:
                 )
             else:
                 con.execute(ACCOUNTS_DDL)
+                account_cols = {r[1] for r in con.execute("PRAGMA table_info(accounts)")}
+                if "is_admin" not in account_cols:
+                    con.execute("ALTER TABLE accounts ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+                if "auth_version" not in account_cols:
+                    con.execute("ALTER TABLE accounts ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
+            con.execute(ACTIVITY_DDL)
             con.execute(WEEKLY_PLANS_DDL)
             cols = {r[1] for r in con.execute("PRAGMA table_info(prefs)")}
             if cols and "date" in cols:
@@ -157,7 +177,8 @@ class Database:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT p.id, p.name, p.color, p.active, a.password_hash
+                SELECT p.id, p.name, p.color, p.active, a.password_hash,
+                       a.is_admin, a.auth_version
                 FROM accounts a JOIN persons p ON p.id = a.person_id
                 WHERE a.username = ? AND p.active = 1
                 """,
@@ -169,7 +190,7 @@ class Database:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT p.id, p.name, p.color, p.active
+                SELECT p.id, p.name, p.color, p.active, a.is_admin, a.auth_version
                 FROM accounts a JOIN persons p ON p.id = a.person_id
                 WHERE p.id = ? AND p.active = 1
                 """,
@@ -177,13 +198,106 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
-    def set_account_password(self, person_id: int, password_hash: str) -> bool:
+    def list_admin_users(self) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT p.id, p.name, p.color, a.username, a.is_admin,
+                       (SELECT MAX(occurred_at) FROM activity_log l
+                        WHERE l.action = 'login' AND l.actor_username = a.username) AS last_login
+                FROM accounts a JOIN persons p ON p.id = a.person_id
+                WHERE p.active = 1 ORDER BY p.name COLLATE NOCASE
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def set_account_password(self, person_id: int, password_hash: str) -> int | None:
         with self._connect() as con:
             cur = con.execute(
-                "UPDATE accounts SET password_hash = ? WHERE person_id = ?",
+                """
+                UPDATE accounts SET password_hash = ?, auth_version = auth_version + 1
+                WHERE person_id = ?
+                """,
                 (password_hash, person_id),
             )
-        return cur.rowcount > 0
+            if not cur.rowcount:
+                return None
+            row = con.execute(
+                "SELECT auth_version FROM accounts WHERE person_id = ?", (person_id,)
+            ).fetchone()
+        return row["auth_version"]
+
+    def set_admin(self, username: str, enabled: bool) -> bool:
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT person_id, is_admin FROM accounts WHERE username = ?",
+                (username.strip(),),
+            ).fetchone()
+            if not row:
+                return False
+            if bool(row["is_admin"]) == enabled:
+                return True
+            if not enabled:
+                total = con.execute(
+                    "SELECT count(*) FROM accounts WHERE is_admin = 1"
+                ).fetchone()[0]
+                if total <= 1:
+                    raise ValueError("Der letzte Admin kann nicht herabgestuft werden")
+            con.execute(
+                "UPDATE accounts SET is_admin = ? WHERE person_id = ?",
+                (int(enabled), row["person_id"]),
+            )
+        return True
+
+    def record_activity(
+        self,
+        actor_username: str,
+        action: str,
+        subject_username: str,
+        details: dict | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        cutoff = (now - timedelta(days=90)).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute("DELETE FROM activity_log WHERE occurred_at < ?", (cutoff,))
+            con.execute(
+                """
+                INSERT INTO activity_log
+                    (actor_username, action, subject_username, details_json, occurred_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    actor_username,
+                    action,
+                    subject_username,
+                    json.dumps(details or {}, ensure_ascii=False),
+                    now.isoformat(timespec="seconds"),
+                ),
+            )
+
+    def recent_activity(self) -> list[dict]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute("DELETE FROM activity_log WHERE occurred_at < ?", (cutoff,))
+            rows = con.execute(
+                """
+                SELECT actor_username, action, subject_username, details_json, occurred_at
+                FROM activity_log WHERE occurred_at >= ?
+                ORDER BY occurred_at DESC
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [
+            {
+                "actor": row["actor_username"],
+                "action": row["action"],
+                "subject": row["subject_username"],
+                "details": json.loads(row["details_json"]),
+                "occurred_at": row["occurred_at"],
+            }
+            for row in rows
+        ]
 
     def calendar_person_version(self, person_id: int) -> int:
         with self._connect() as con:
@@ -259,6 +373,7 @@ class Database:
         *,
         freeze_week: tuple[int, int] | None = None,
         frozen_plan: dict | None = None,
+        actor_username: str | None = None,
     ) -> bool:
         """Setzt eine Wochentagspriorität und friert optional den aktiven Plan ein."""
         with self._connect() as con:
@@ -291,6 +406,31 @@ class Database:
                     DO UPDATE SET value = excluded.value
                     """,
                     (person_id, weekday, slot, value),
+                )
+            if actor_username:
+                subject = con.execute(
+                    "SELECT username FROM accounts WHERE person_id = ?", (person_id,)
+                ).fetchone()
+                now = datetime.now(timezone.utc)
+                cutoff = (now - timedelta(days=90)).isoformat(timespec="seconds")
+                con.execute("DELETE FROM activity_log WHERE occurred_at < ?", (cutoff,))
+                con.execute(
+                    """
+                    INSERT INTO activity_log
+                        (actor_username, action, subject_username, details_json, occurred_at)
+                    VALUES (?, 'preference_change', ?, ?, ?)
+                    """,
+                    (
+                        actor_username,
+                        subject["username"] if subject else str(person_id),
+                        json.dumps({
+                            "weekday": weekday,
+                            "slot": slot,
+                            "old_value": row["value"] if row else None,
+                            "new_value": value,
+                        }),
+                        now.isoformat(timespec="seconds"),
+                    ),
                 )
             return True
 

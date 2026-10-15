@@ -86,6 +86,27 @@
         <button type="submit">+ Hinzufügen</button>
       </form>
     </section>
+
+    <section class="card" id="adminSection" hidden>
+      <h2>Administration</h2>
+      <label>Teilnehmer
+        <select id="adminUserSelect"></select>
+      </label>
+      <h3>Präferenzen des Teilnehmers</h3>
+      <p class="hint">Änderungen gelten ab nächster Woche; der aktuelle Wochenplan bleibt unverändert.</p>
+      <div id="adminPrefsGrid" class="table-wrap"></div>
+      <form id="adminPasswordForm" class="account-form">
+        <label>Neues Passwort für den ausgewählten Teilnehmer (mindestens 12 Zeichen)
+          <input id="adminNewPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+        </label>
+        <button type="submit">Passwort zurücksetzen</button>
+      </form>
+      <div class="admin-activity-heading">
+        <h3>Aktivität (letzte 90 Tage)</h3>
+        <button id="refreshActivity" class="secondary" type="button">Aktualisieren</button>
+      </div>
+      <div id="adminActivity" class="table-wrap"></div>
+    </section>
   </main>
 
   <div id="toast" class="toast" hidden></div>

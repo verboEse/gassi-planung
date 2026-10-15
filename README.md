@@ -97,6 +97,26 @@ passwortlose Konten migriert; ein Admin muss zuerst ein Passwort setzen. Für
 einen frischen Start auf dem Server `GASSI_DB` auf eine neue Datenbankdatei
 setzen; die bisherige Datenbank bleibt unangetastet.
 
+Admin-Rechte werden ausschließlich auf dem Server vergeben. Erst das Konto im
+Web-UI registrieren, dann das erste Admin-Konto per Konsole bestimmen:
+
+```bash
+docker compose exec app python -m app.admin grant-admin "Jan"
+docker compose exec app python -m app.admin list-users
+```
+
+Lokal ohne Docker: `.venv/bin/python -m app.admin grant-admin "Jan"`.
+Weitere Befehle: `revoke-admin "Name"` und `reset-password "Name"`. Der letzte
+Admin kann nicht herabgestuft werden. Nach dem Anmelden sehen Admins die
+Verwaltungsseite: Sie können Präferenzen anderer Teilnehmer für die Folgewoche
+überschreiben und deren Passwort zurücksetzen. Ein Passwort-Reset beendet
+vorhandene Sitzungen des betroffenen Kontos.
+
+Die Aktivitätsliste zeigt erfolgreiche Anmeldungen und Präferenzänderungen
+(einschließlich Admin-Overrides) der letzten 90 Tage. Passwörter und
+fehlgeschlagene Anmeldeversuche werden nicht protokolliert. Nach diesem Update
+müssen bestehende Sitzungen sich einmal neu anmelden.
+
 ### Teilnehmerkonto löschen
 
 Es gibt keine Selbstbedienungs-Löschung. Bei aktivierter Anmeldung ist auch die

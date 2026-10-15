@@ -70,6 +70,10 @@ class PasswordChangeIn(BaseModel):
     new_password: str = Field(min_length=12, max_length=256)
 
 
+class AdminPasswordResetIn(BaseModel):
+    new_password: str = Field(min_length=12, max_length=256)
+
+
 def week_dates(year: int, week: int) -> list[str]:
     """Montag bis Sonntag der ISO-Kalenderwoche als ISO-Datumsstrings."""
     return [dt_date.fromisocalendar(year, week, d).isoformat() for d in range(1, 8)]
@@ -115,10 +119,15 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             return None
         person_id = request.session.get("person_id")
         person = db.account_for_person(person_id) if isinstance(person_id, int) else None
-        if not person:
+        if not person or request.session.get("auth_version") != person["auth_version"]:
             request.session.clear()
             raise HTTPException(401, "Anmeldung erforderlich")
         return person
+
+    def require_admin(account: dict | None = Depends(require_account)) -> dict:
+        if not account or not account["is_admin"]:
+            raise HTTPException(403, "Admin-Berechtigung erforderlich")
+        return account
 
     def calendar_url(person_id: int) -> str:
         version = db.calendar_person_version(person_id)
@@ -149,8 +158,11 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 raise HTTPException(409, "Name existiert bereits")
             except ValueError as exc:
                 raise HTTPException(422, str(exc))
+            account = db.account_for_person(person["id"])
+            assert account is not None
             request.session.clear()
             request.session["person_id"] = person["id"]
+            request.session["auth_version"] = account["auth_version"]
             return {"ok": True}
 
         @app.post("/auth/login")
@@ -162,6 +174,8 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 raise HTTPException(401, "Name oder Passwort falsch")
             request.session.clear()
             request.session["person_id"] = account["id"]
+            request.session["auth_version"] = account["auth_version"]
+            db.record_activity(account["name"], "login", account["name"])
             return {"ok": True}
 
         @app.post("/auth/logout", status_code=204)
@@ -171,17 +185,27 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         @app.get("/api/me")
         def get_me(account: dict | None = Depends(require_account)):
             assert account is not None
-            return {"person": account, "calendar_url": calendar_url(account["id"])}
+            return {
+                "person": {
+                    key: account[key] for key in ("id", "name", "color", "active", "is_admin")
+                },
+                "calendar_url": calendar_url(account["id"]),
+            }
 
         @app.post("/api/me/password")
         def change_password(
-            body: PasswordChangeIn, account: dict | None = Depends(require_account)
+            body: PasswordChangeIn,
+            request: Request,
+            account: dict | None = Depends(require_account),
         ):
             assert account is not None
             stored = db.account_for_username(account["name"])
             if not stored or not verify_password(body.current_password, stored["password_hash"]):
                 raise HTTPException(403, "Aktuelles Passwort ist falsch")
-            db.set_account_password(account["id"], hash_password(body.new_password))
+            auth_version = db.set_account_password(
+                account["id"], hash_password(body.new_password)
+            )
+            request.session["auth_version"] = auth_version
             return {"ok": True}
 
         @app.post("/api/me/calendar-token")
@@ -189,6 +213,36 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             assert account is not None
             db.rotate_calendar_token(account["id"])
             return {"calendar_url": calendar_url(account["id"])}
+
+        @app.get("/api/admin/users", dependencies=[Depends(require_admin)])
+        def admin_users():
+            prefs: dict[str, dict[str, dict[str, int]]] = {}
+            for (weekday, slot, person_id), value in db.prefs_all().items():
+                prefs.setdefault(str(person_id), {}).setdefault(str(weekday), {})[slot] = value
+            return {"users": db.list_admin_users(), "prefs": prefs}
+
+        @app.get("/api/admin/activity", dependencies=[Depends(require_admin)])
+        def admin_activity():
+            return {"events": db.recent_activity()}
+
+        @app.post("/api/admin/users/{person_id}/password")
+        def admin_reset_password(
+            person_id: int,
+            body: AdminPasswordResetIn,
+            admin: dict = Depends(require_admin),
+        ):
+            account = db.account_for_person(person_id)
+            if not account:
+                raise HTTPException(404, "Teilnehmer nicht gefunden")
+            if person_id == admin["id"]:
+                raise HTTPException(422, "Eigenes Passwort bitte über das eigene Konto ändern")
+            if db.set_account_password(person_id, hash_password(body.new_password)) is None:
+                raise HTTPException(404, "Teilnehmerkonto nicht gefunden")
+            return {"ok": True}
+
+        @app.put("/api/admin/prefs")
+        def admin_set_pref(body: PrefIn, admin: dict = Depends(require_admin)):
+            return save_preference(body, admin["name"])
 
     # --- Slots / Metadaten -------------------------------------------------
 
@@ -375,14 +429,9 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             headers=headers,
         )
 
-    @app.put("/api/prefs")
-    def put_pref(
-        body: PrefIn, account: dict | None = Depends(require_account)
-    ):
-        if auth_enabled and (account is None or body.person_id != account["id"]):
-            raise HTTPException(403, "Du kannst nur eigene Prioritäten ändern")
+    def save_preference(body: PrefIn, actor_username: str | None) -> dict:
         if not db.person_exists(body.person_id):
-            raise HTTPException(404, "Person nicht gefunden")
+            raise HTTPException(404, "Teilnehmer nicht gefunden")
         if body.slot not in SLOTS:
             raise HTTPException(422, f"Ungültiger Slot: {body.slot}")
         if body.value is not None and body.value not in VALID_PREF_VALUES:
@@ -398,6 +447,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             body.value,
             freeze_week=(freeze_year, freeze_week),
             frozen_plan=frozen_plan,
+            actor_username=actor_username,
         )
         next_monday = dt_date.fromisocalendar(freeze_year, freeze_week, 1) + timedelta(days=7)
         effective = next_monday.isocalendar()
@@ -407,6 +457,14 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             "effective_year": effective.year,
             "effective_week": effective.week,
         }
+
+    @app.put("/api/prefs")
+    def put_pref(
+        body: PrefIn, account: dict | None = Depends(require_account)
+    ):
+        if auth_enabled and (account is None or body.person_id != account["id"]):
+            raise HTTPException(403, "Du kannst nur eigene Prioritäten ändern")
+        return save_preference(body, account["name"] if account else None)
 
     # --- Frontend -------------------------------------------------------------
 

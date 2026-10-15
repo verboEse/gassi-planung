@@ -76,6 +76,9 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
   padding: 0.5rem 0.6rem;
   font-size: 0.95rem;
 }
+#adminSection > label { display: grid; gap: 0.3rem; max-width: 24rem; }
+.admin-activity-heading { display: flex; align-items: center; justify-content: space-between; }
+#adminActivity { max-height: 24rem; overflow: auto; }
 
 .table-wrap { overflow-x: auto; }
 

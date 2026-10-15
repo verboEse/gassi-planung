@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
@@ -36,7 +37,9 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
     app = create_app(str(db_path))
     with TestClient(app) as client:
         assert client.get("/api/week").status_code == 401
-        session = base64.b64encode(json.dumps({"person_id": owner["id"]}).encode())
+        session = base64.b64encode(json.dumps({
+            "person_id": owner["id"], "auth_version": 1,
+        }).encode())
         client.cookies.set("session", TimestampSigner(secret).sign(session).decode())
 
         week_response = client.get("/api/week")
@@ -77,6 +80,82 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
         new_url = client.post("/api/me/calendar-token").json()["calendar_url"]
         assert client.get(urlsplit(old_url).path).status_code == 404
         assert client.get(urlsplit(new_url).path).status_code == 200
+
+
+def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "admin.sqlite3"
+    db = Database(db_path)
+    admin = db.add_account("Jan", hash_password("jan family password"))
+    participant = db.add_account("Laura", hash_password("laura family password"))
+    assert db.set_admin("Jan", True)
+    app = create_app(str(db_path))
+
+    with TestClient(app) as admin_client, TestClient(app) as user_client:
+        assert admin_client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert user_client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 200
+        assert admin_client.get("/api/me").json()["person"]["is_admin"] == 1
+        assert user_client.get("/api/admin/users").status_code == 403
+        assert admin_client.post(
+            f"/api/admin/users/{admin['id']}/password",
+            json={"new_password": "another Jan password"},
+        ).status_code == 422
+
+        users = admin_client.get("/api/admin/users").json()
+        assert {user["username"] for user in users["users"]} == {"Jan", "Laura"}
+        override = admin_client.put("/api/admin/prefs", json={
+            "person_id": participant["id"], "weekday": 2, "slot": "evening", "value": -1,
+        })
+        assert override.status_code == 200 and override.json()["changed"]
+        events = admin_client.get("/api/admin/activity").json()["events"]
+        assert any(event["action"] == "login" and event["actor"] == "Laura" for event in events)
+        pref_event = next(event for event in events if event["action"] == "preference_change")
+        assert pref_event["actor"] == "Jan" and pref_event["subject"] == "Laura"
+
+        reset = admin_client.post(
+            f"/api/admin/users/{participant['id']}/password",
+            json={"new_password": "laura reset password"},
+        )
+        assert reset.status_code == 200
+        assert user_client.get("/api/me").status_code == 401
+        assert user_client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 401
+        assert user_client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura reset password",
+        }).status_code == 200
+
+    assert db.set_admin("Laura", True)
+    assert db.set_admin("Jan", False)
+    try:
+        db.set_admin("Laura", False)
+    except ValueError as exc:
+        assert "letzte Admin" in str(exc)
+    else:
+        raise AssertionError("must retain at least one admin")
+
+
+def test_activity_history_expires_after_90_days(tmp_path):
+    db = Database(tmp_path / "activity.sqlite3")
+    db.record_activity("Jan", "login", "Jan")
+    cutoff_event = (datetime.now(timezone.utc) - timedelta(days=91)).isoformat(timespec="seconds")
+    with db._connect() as con:
+        con.execute(
+            """
+            INSERT INTO activity_log (actor_username, action, subject_username, details_json, occurred_at)
+            VALUES ('Laura', 'login', 'Laura', '{}', ?)
+            """,
+            (cutoff_event,),
+        )
+
+    events = db.recent_activity()
+    assert len(events) == 1
+    assert events[0]["actor"] == "Jan"
 
 
 def test_registration_login_and_password_change(tmp_path, monkeypatch):

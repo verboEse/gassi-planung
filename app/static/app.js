@@ -6,6 +6,8 @@ const state = {
   data: null,
   me: null,
   selectedPerson: null,
+  adminData: null,
+  adminUserId: null,
 };
 
 let authMode = "login";
@@ -282,6 +284,130 @@ function renderPersonList() {
   }
 }
 
+function renderAdminUsers() {
+  const select = document.getElementById("adminUserSelect");
+  const users = state.adminData?.users || [];
+  select.replaceChildren();
+  for (const user of users) {
+    const option = document.createElement("option");
+    option.value = user.id;
+    option.textContent = `${user.name}${user.is_admin ? " (Admin)" : ""}`;
+    select.appendChild(option);
+  }
+  if (!users.some(user => user.id === state.adminUserId)) {
+    state.adminUserId = users.length ? users[0].id : null;
+  }
+  if (state.adminUserId !== null) select.value = String(state.adminUserId);
+  select.disabled = !users.length;
+  renderAdminPrefs();
+}
+
+function renderAdminPrefs() {
+  const wrap = document.getElementById("adminPrefsGrid");
+  wrap.replaceChildren();
+  const user = state.adminData?.users.find(item => item.id === state.adminUserId);
+  if (!user) {
+    wrap.textContent = "Keine Teilnehmer vorhanden.";
+    return;
+  }
+  const prefs = state.adminData.prefs[String(user.id)] || {};
+  const weekdays = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  const labels = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
+  const table = document.createElement("table");
+  const head = document.createElement("tr");
+  head.appendChild(document.createElement("th")).textContent = "Tag";
+  for (const slot of SLOT_KEYS) head.appendChild(document.createElement("th")).textContent = labels[slot];
+  table.createTHead().appendChild(head);
+  const body = table.createTBody();
+  weekdays.forEach((day, index) => {
+    const row = body.insertRow();
+    row.insertCell().textContent = day;
+    for (const slot of SLOT_KEYS) {
+      const select = document.createElement("select");
+      const value = prefs[String(index + 1)]?.[slot];
+      for (const item of PREF_OPTIONS) {
+        const option = document.createElement("option");
+        option.value = item.value;
+        option.textContent = item.label;
+        option.selected = item.value === (value === undefined ? "" : String(value));
+        select.appendChild(option);
+      }
+      select.onchange = () => setAdminPref(
+        user.id, index + 1, slot, select.value === "" ? null : Number(select.value)
+      );
+      row.insertCell().appendChild(select);
+    }
+  });
+  wrap.appendChild(table);
+}
+
+function renderAdminActivity(events) {
+  const wrap = document.getElementById("adminActivity");
+  wrap.replaceChildren();
+  if (!events.length) {
+    wrap.textContent = "Keine Aktivität in den letzten 90 Tagen.";
+    return;
+  }
+  const table = document.createElement("table");
+  const head = table.createTHead().insertRow();
+  for (const title of ["Zeit", "Ereignis", "Teilnehmer", "Details"]) {
+    head.insertCell().textContent = title;
+  }
+  const body = table.createTBody();
+  const dayNames = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"];
+  const slotNames = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
+  for (const event of events) {
+    const row = body.insertRow();
+    row.insertCell().textContent = new Date(event.occurred_at).toLocaleString("de-DE");
+    row.insertCell().textContent = event.action === "login" ? "Anmeldung" : "Präferenz geändert";
+    row.insertCell().textContent = event.subject;
+    const details = event.action === "login"
+      ? `Anmeldung von ${event.actor}`
+      : `${event.actor}: ${dayNames[event.details.weekday - 1]} ${slotNames[event.details.slot]} (${event.details.old_value ?? "–"} → ${event.details.new_value ?? "–"})`;
+    row.insertCell().textContent = details;
+  }
+  wrap.appendChild(table);
+}
+
+async function refreshAdminActivity() {
+  if (!state.me?.person.is_admin) return;
+  try {
+    const activity = await api("/api/admin/activity");
+    renderAdminActivity(activity.events);
+  } catch (e) { toast(e.message); }
+}
+
+async function loadAdminPanel() {
+  if (!state.me?.person.is_admin) return;
+  try {
+    state.adminData = await api("/api/admin/users");
+    renderAdminUsers();
+    await refreshAdminActivity();
+  } catch (e) { toast(e.message); }
+}
+
+async function setAdminPref(personId, weekday, slot, value) {
+  try {
+    const result = await api("/api/admin/prefs", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ person_id: personId, weekday, slot, value }),
+    });
+    if (result.changed) {
+      state.year = result.effective_year;
+      state.week = result.effective_week;
+    }
+    await loadWeek(true);
+    await loadAdminPanel();
+    if (result.changed) {
+      toast(`Änderung für ${state.adminData.users.find(user => user.id === personId)?.name || "Teilnehmer"} gilt ab KW ${result.effective_week}/${result.effective_year}.`);
+    }
+  } catch (e) {
+    toast(e.message);
+    await loadAdminPanel();
+  }
+}
+
 // ---------- Aktionen -----------------------------------------------------------
 
 async function setPref(personId, weekday, slot, value) {
@@ -326,6 +452,9 @@ document.addEventListener("visibilitychange", () => {
 setInterval(() => {
   if (!document.hidden) loadWeek().catch(() => {});
 }, 10_000);
+setInterval(() => {
+  if (!document.hidden) refreshAdminActivity();
+}, 30_000);
 
 document.getElementById("addPersonForm").onsubmit = async (ev) => {
   ev.preventDefault();
@@ -378,6 +507,27 @@ document.getElementById("authForm").onsubmit = async (ev) => {
   } catch (e) { toast(e.message); }
 };
 
+document.getElementById("adminUserSelect").onchange = (ev) => {
+  state.adminUserId = Number(ev.target.value);
+  renderAdminPrefs();
+};
+document.getElementById("refreshActivity").onclick = () => refreshAdminActivity();
+document.getElementById("adminPasswordForm").onsubmit = async (ev) => {
+  ev.preventDefault();
+  if (!state.adminUserId) return;
+  const user = state.adminData.users.find(item => item.id === state.adminUserId);
+  if (!user || !confirm(`Passwort für ${user.name} zurücksetzen?`)) return;
+  try {
+    await api(`/api/admin/users/${user.id}/password`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ new_password: document.getElementById("adminNewPassword").value }),
+    });
+    ev.target.reset();
+    toast(`Passwort für ${user.name} zurückgesetzt.`);
+  } catch (e) { toast(e.message); }
+};
+
 document.getElementById("passwordForm").onsubmit = async (ev) => {
   ev.preventDefault();
   try {
@@ -413,6 +563,8 @@ async function initialize() {
     nav.hidden = false;
     accountInfo.hidden = false;
     document.getElementById("accountName").textContent = state.me.person.name;
+    document.getElementById("adminSection").hidden = !state.me.person.is_admin;
+    if (state.me.person.is_admin) loadAdminPanel();
   } catch (e) {
     if (e.status === 401) {
       auth.hidden = false;
