@@ -52,27 +52,28 @@ class TestBlocks:
 
 
 class TestPriorities:
-    def test_higher_priority_wins(self):
+    def test_higher_priority_breaks_ties_after_balancing(self):
         persons = [1, 2]
         prefs = {("2026-10-12", s, 1): 1 for s in SLOTS}
         prefs.update({("2026-10-12", s, 2): 3 for s in SLOTS})
         result = compute_plan(ONE_DAY, persons, prefs)
-        assert all(a.person_id == 2 for a in result.assignments)
-        assert all(a.pref == 3 for a in result.assignments)
+        assert sorted(result.counts.values()) == [1, 2]
+        assert result.counts[2] == 2
 
-    def test_priority_beats_fairness(self):
-        """Ein echter Prioritätenunterschied (3 vs. 2) schlägt die Balance."""
+    def test_higher_priority_gets_extra_slot_when_balance_is_equal(self):
         persons = [1, 2]
         prefs = {("2026-10-12", s, 1): 3 for s in SLOTS}  # p2 bleibt neutral (2)
         result = compute_plan(ONE_DAY, persons, prefs)
-        assert all(a.person_id == 1 for a in result.assignments)
+        assert sorted(result.counts.values()) == [1, 2]
+        assert result.counts[1] == 2
 
-    def test_unset_means_neutral(self):
+    def test_unset_means_neutral_when_breaking_balance_ties(self):
         persons = [1, 2]
-        # p1 explizit neutral (2), p2 explizit ungern (1) -> p1 bekommt alles
+        # p1 bleibt neutral (2), p2 ist explizit ungern (1).
         prefs = {("2026-10-12", s, 2): 1 for s in SLOTS}
         result = compute_plan(ONE_DAY, persons, prefs)
-        assert all(a.person_id == 1 for a in result.assignments)
+        assert sorted(result.counts.values()) == [1, 2]
+        assert result.counts[1] == 2
 
 
 class TestFairness:
@@ -82,6 +83,15 @@ class TestFairness:
         counts = sorted(result.counts.values())
         assert counts == [7, 7, 7]
         assert result.unassigned == ()
+
+    def test_preferences_do_not_outweigh_equal_distribution(self):
+        persons = [1, 2, 3]
+        slots = tuple(f"slot_{index}" for index in range(16))
+        prefs = {("2026-10-12", slot, 1): 1 for slot in slots}
+
+        result = compute_plan(ONE_DAY, persons, prefs, slots=slots)
+
+        assert sorted(result.counts.values()) == [5, 5, 6]
 
     def test_balanced_with_two_persons(self):
         persons = [1, 2]

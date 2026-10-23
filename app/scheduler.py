@@ -6,9 +6,7 @@ dem in PuLP gebundelten CBC-Solver exakt gelöst:
 * Jeder Slot wird genau einer Person zugewiesen – oder als unbesetzt markiert,
   wenn alle Personen blockiert haben.
 * Blockierte Slots sind harte Nebenbedingungen.
-* Zielfunktion: Summe der Prioritäten maximieren, abzüglich einer weichen
-  Fairness-Strafe (Spanne zwischen meisten und wenigsten Einsätzen) und einer
-  hohen Strafe für unbesetzte Slots.
+* Zielfunktion: Einsatzzahlen ausgleichen, Prioritäten als Tie-Breaker nutzen.
 """
 from __future__ import annotations
 
@@ -55,7 +53,7 @@ def compute_plan(
     person_ids: list[int],
     prefs: dict[tuple[str, str, int], int],
     slots: tuple[str, ...] = SLOTS,
-    fairness_weight: float = 0.25,
+    fairness_weight: float | None = None,
     default_pref: int = DEFAULT_PREF,
 ) -> PlanResult:
     """Berechnet die optimale Zuweisung für die gegebenen Tage.
@@ -65,10 +63,13 @@ def compute_plan(
     :param prefs: {(date, slot, person_id): wert} mit wert in {-1, 1, 2, 3};
         fehlende Einträge gelten als ``default_pref`` (neutral)
     :param fairness_weight: Gewicht der Fairness-Strafe pro Slot Unterschied
-        in der Einsatzzahl. Klein genug, dass echte Prioritätenunterschiede
-        (>= 1 Punkt) immer gegen Fairness gewinnen.
+        in der Einsatzzahl. Standardmäßig wird es so gewählt, dass die Balance
+        Vorrang vor jedem möglichen Prioritätsgewinn hat.
     :raises RuntimeError: wenn der Solver keine optimale Lösung findet
     """
+    if fairness_weight is None:
+        fairness_weight = (MAX_PREF - MIN_PREF) * len(dates) * len(slots) + 1
+
     prob = pulp.LpProblem("gassi-plan", pulp.LpMaximize)
 
     def pref_of(d: str, s: str, p: int) -> int:

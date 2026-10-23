@@ -16,8 +16,7 @@ Wochenplan** und stellt ihn als Tabelle dar.
   einer Woche friert deren Plan bis Sonntag ein. Neue Prioritäten gelten ab Montag.
 - 🧮 Optimale Planberechnung per ILP (ganzzahlige Optimierung, CBC-Solver via PuLP):
   - Blockierungen sind harte Regeln
-  - Maximale Gesamt-Priorität
-  - Weiche Fairness: Einsätze werden über die Woche möglichst gleichmäßig verteilt
+  - Einsatzverteilung wird zuerst ausgeglichen; Präferenzen entscheiden danach
   - Slots, an denen **alle** blockiert haben, werden als „⚠️ frei“ markiert statt zu crashen
 - ⚡ Präferenzänderungen aktualisieren kommende Wochen; der aktive Wochenplan bleibt unverändert
 - 🔐 Jeder Teilnehmer erstellt mit Gruppeneinladungscode ein eigenes Konto
@@ -157,16 +156,20 @@ Für jede Kombination aus Tag × Slot × Person existiert eine binäre Variable
 („Person P geht an Tag D im Slot S“). Der Solver maximiert:
 
 ```
-Σ Priorität(zugewiesener Slot)  −  0,25 × (max. Einsätze − min. Einsätze)  −  1000 × unbesetzte Slots
+Σ Priorität(zugewiesener Slot)  −  Fairnessgewicht × (max. Einsätze − min. Einsätze)  −  1000 × unbesetzte Slots
 ```
+
+Das Standard-Fairnessgewicht beträgt `2 × Slotzahl + 1`. Dadurch kann ein
+Prioritätsunterschied die bestmögliche Verteilung nicht verschlechtern; bei
+gleichmäßiger Verteilung entscheiden die Präferenzen.
 
 Nebenbedingungen:
 
 - Jeder Slot wird **genau einer Person** zugewiesen (oder bleibt als Notlösung unbesetzt)
 - Blockierte Slots (🚫) sind für die Person **nicht zuweisbar**
 
-Dadurch gewinnen echte Prioritätenunterschiede (z. B. 3 vs. 1) immer gegen die
-Fairness, aber bei gleichen Präferenzen wird sauber balanciert.
+Dadurch wird zuerst die Einsatzspanne minimiert. Erst unter gleich fairen
+Verteilungen entscheiden die individuellen Präferenzen.
 
 ## Tests
 
