@@ -46,14 +46,14 @@
   </main>
 
   <main id="appContent" hidden>
-    <section class="card" id="planSection">
-      <h2>Plan</h2>
+    <details class="card" id="planSection" open>
+      <summary>Plan</summary>
       <div id="planTable" class="table-wrap"></div>
       <div id="planStats" class="stats"></div>
-    </section>
+    </details>
 
-    <section class="card" id="editSection">
-      <h2>Prioritäten</h2>
+    <details class="card" id="editSection">
+      <summary>Prioritäten</summary>
       <div id="personTabs" class="tabs"></div>
       <div id="calLink" class="cal-link"></div>
       <p class="hint">
@@ -62,10 +62,10 @@
         <strong>–</strong> = neutral (wie 2) · Änderungen gelten <strong>ab nächster Woche</strong>; aktueller Plan bleibt bis Sonntag fest
       </p>
       <div id="editGrid" class="table-wrap"></div>
-    </section>
+    </details>
 
-    <section class="card" id="passwordSection">
-      <h2>Passwort ändern</h2>
+    <details class="card" id="passwordSection">
+      <summary>Passwort ändern</summary>
       <form id="passwordForm" class="account-form">
         <label>Aktuelles Passwort
           <input id="currentPassword" type="password" autocomplete="current-password" required>
@@ -75,20 +75,20 @@
         </label>
         <button type="submit">Passwort speichern</button>
       </form>
-    </section>
+    </details>
 
-    <section class="card" id="personsSection">
-      <h2>Personen</h2>
+    <details class="card" id="personsSection">
+      <summary>Personen</summary>
       <div id="personList" class="person-list"></div>
       <form id="addPersonForm">
         <input id="newName" type="text" placeholder="Name" maxlength="50" required>
         <input id="newColor" type="color" value="#4a90d9" title="Farbe">
         <button type="submit">+ Hinzufügen</button>
       </form>
-    </section>
+    </details>
 
-    <section class="card" id="adminSection" hidden>
-      <h2>Administration</h2>
+    <details class="card" id="adminSection" hidden>
+      <summary>Administration</summary>
       <label>Teilnehmer
         <select id="adminUserSelect"></select>
       </label>
@@ -106,7 +106,7 @@
         <button id="refreshActivity" class="secondary" type="button">Aktualisieren</button>
       </div>
       <div id="adminActivity" class="table-wrap"></div>
-    </section>
+    </details>
   </main>
 
   <div id="toast" class="toast" hidden></div>
