@@ -28,6 +28,17 @@ def add_person(client, name, color=None):
     return res.json()
 
 
+def test_profile_and_badge_endpoints_are_in_openapi(tmp_path):
+    schema = create_app(str(tmp_path / "openapi.sqlite3")).openapi()
+    paths = schema["paths"]
+    assert {"get"} <= paths["/api/profile"].keys()
+    assert {"get"} <= paths["/api/badges"].keys()
+    assert {"get"} <= paths["/api/badges/{badge_id}"].keys()
+    assert {"get"} <= paths["/api/badges/{badge_id}/participants/{person_id}/avatar"].keys()
+    assert {"put", "get", "delete"} <= paths["/api/profile/avatar"].keys()
+    assert {"patch"} <= paths["/api/profile/preferences"].keys()
+
+
 class TestPersons:
     def test_create_and_list(self, client):
         p = add_person(client, "Jan")
@@ -75,6 +86,7 @@ class TestGamification:
         jan = progress.json()["persons"][0]
         assert jan["points"] == 1
         assert jan["level"] == 1
+        assert jan["level_name"] == "Gassi-Starter"
         assert {badge["id"] for badge in jan["badges"]} == {"first-walk"}
 
         removed = client.delete(

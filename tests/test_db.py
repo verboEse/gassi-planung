@@ -57,6 +57,8 @@ class TestMigration:
         assert "walk_completions" in tables
         assert "active_walks" in tables
         assert "person_badges" in tables
+        assert "badge_categories" in tables
+        assert "badge_definitions" in tables
         con.close()
 
     def test_migration_is_idempotent(self, tmp_path):
@@ -65,6 +67,69 @@ class TestMigration:
         Database(db_file)
         db = Database(db_file)  # zweiter Start: keine Doppel-Migration
         assert db.prefs_all()[(1, "morning", 1)] == 1
+
+
+class TestProfileSchema:
+    def test_profile_fields_and_badge_seeds_on_existing_database(self, tmp_path):
+        path = tmp_path / "profile-migration.sqlite3"
+        create_old_db(path)
+        con = sqlite3.connect(path)
+        con.execute(
+            "CREATE TABLE person_badges (person_id INTEGER NOT NULL, badge_id TEXT NOT NULL, "
+            "awarded_at TEXT NOT NULL, PRIMARY KEY (person_id, badge_id))"
+        )
+        con.execute(
+            "INSERT INTO person_badges VALUES (1, 'first-walk', '2026-10-12T00:00:00+00:00')"
+        )
+        con.commit()
+        con.close()
+        db = Database(path)
+        with db._connect() as con:
+            person_cols = {row[1] for row in con.execute("PRAGMA table_info(persons)")}
+            categories = con.execute(
+                "SELECT id FROM badge_categories ORDER BY sort_order"
+            ).fetchall()
+            definitions = con.execute(
+                "SELECT id, category_id, retention, icon, art_key FROM badge_definitions ORDER BY id"
+            ).fetchall()
+        assert {
+            "avatar_data", "avatar_mime_type", "badge_visibility",
+            "push_enabled", "reminders_enabled",
+        } <= person_cols
+        assert len(categories) == 6
+        definition_ids = {row[0] for row in definitions}
+        assert {"first-walk", "ten-walks", "fifty-walks", "full-week"} <= definition_ids
+        seasonal_ids = {
+            badge_id for badge_id in definition_ids if badge_id.endswith(tuple(map(str, range(2026, 2031))))
+        }
+        assert len(seasonal_ids) == 50
+        assert all(row[3] == "" for row in definitions)
+        assert all(row[4] and row[4] != "seal" for row in definitions if row[0] in seasonal_ids)
+        assert next(row for row in definitions if row[0] == "first-walk")[4] == "seed"
+        assert next(row for row in definitions if row[0] == "valentines-walk-2027")[4] == "heart-paws"
+        assert [db.level_definition(level)["name"] for level in range(1, 5)] == [
+            "Gassi-Starter", "Runden-Profi", "Pfoten-Champion", "Spaziergangs-Legende"
+        ]
+        assert [db.level_definition(level)["threshold_points"] for level in range(1, 5)] == [
+            0, 10, 25, 45
+        ]
+        assert db.person_exists(1)
+        assert db.list_person_badges(1)[0]["badge_id"] == "first-walk"
+        with db._connect() as con:
+            badge_fks = con.execute("PRAGMA foreign_key_list(person_badges)").fetchall()
+        assert any(row["table"] == "badge_definitions" for row in badge_fks)
+
+
+    def test_badge_definition_icons_are_added_to_existing_database(self, tmp_path):
+        path = tmp_path / "badge-icon-migration.sqlite3"
+        db = Database(path)
+        with db._connect() as con:
+            con.execute("ALTER TABLE badge_definitions DROP COLUMN icon")
+        migrated = Database(path)
+        with migrated._connect() as con:
+            columns = {row[1] for row in con.execute("PRAGMA table_info(badge_definitions)")}
+        assert "art_key" in columns
+        assert migrated.badge_definition("first-walk")["art_key"] == "seed"
 
 
 class TestWalkCompletions:

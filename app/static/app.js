@@ -9,6 +9,10 @@ const state = {
   adminData: null,
   adminUserId: null,
   gamification: null,
+  profile: null,
+  badgeCatalog: null,
+  badgeHistory: false,
+  badgeDetail: null,
 };
 
 let authMode = "login";
@@ -242,6 +246,7 @@ async function loadGamification() {
   state.gamification = await api("/api/gamification");
   renderGamification();
   renderPlan();
+  if (state.badgeCatalog) await loadBadgeCatalog(state.badgeHistory);
 }
 
 async function toggleCompletion(date, slot, completed) {
@@ -260,6 +265,325 @@ async function toggleCompletion(date, slot, completed) {
 async function removeCompletion(date, slot) {
   await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
   await loadGamification();
+}
+
+function renderHeaderProfile() {
+  const profile = state.profile || state.me?.person;
+  if (!profile) return;
+  const img = document.getElementById("headerAvatar");
+  const fallback = document.getElementById("headerAvatarFallback");
+  const url = profile.avatar_url;
+  img.hidden = !url;
+  fallback.hidden = Boolean(url);
+  if (url) img.src = url;
+  else fallback.textContent = profile.name.trim().slice(0, 1).toUpperCase();
+  document.getElementById("avatarButton").style.background = profile.color;
+  const level = profile.level ?? 1;
+  const label = profile.level_name ?? `Level ${level}`;
+  document.getElementById("headerLevelButton").textContent = `Level ${level} · ${label}`;
+}
+
+function renderProfile() {
+  if (!state.profile) return;
+  const profile = state.profile;
+  document.getElementById("profileLastActivity").textContent = profile.last_activity
+    ? `Letzte Aktivität: ${new Date(profile.last_activity).toLocaleString("de-DE")}`
+    : "Noch keine protokollierte Aktivität.";
+  document.getElementById("badgeVisibilitySetting").checked = profile.badge_visibility;
+  document.getElementById("pushSetting").checked = profile.push_enabled;
+  document.getElementById("reminderSetting").checked = profile.reminders_enabled;
+  document.getElementById("removeAvatarButton").hidden = !profile.avatar_url;
+  renderHeaderProfile();
+}
+
+function badgeArtwork(badge) {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  const seed = [...badge.id].reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 7);
+  const palettes = [
+    ["#1679a8", "#d9f0f5"], ["#d66b3d", "#ffebd9"],
+    ["#598b57", "#e5f1dd"], ["#7652a3", "#eee5fa"],
+    ["#bf8b24", "#fff2ce"], ["#b54e68", "#ffe5ec"],
+  ];
+  const [rim, face] = palettes[seed % palettes.length];
+  svg.setAttribute("viewBox", "0 0 96 96");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", `${badge.title} Abzeichen`);
+  const add = (tag, attrs) => {
+    const element = document.createElementNS(ns, tag);
+    for (const [key, value] of Object.entries(attrs)) element.setAttribute(key, String(value));
+    svg.appendChild(element);
+    return element;
+  };
+  const sealPoints = Array.from({ length: 24 }, (_, index) => {
+    const angle = index * Math.PI / 12 - Math.PI / 2;
+    const radius = index % 2 ? 39 : 44;
+    return `${48 + Math.cos(angle) * radius},${48 + Math.sin(angle) * radius}`;
+  }).join(" ");
+  add("polygon", { points: sealPoints, fill: rim });
+  add("circle", { cx: 48, cy: 48, r: 34, fill: face, stroke: "#ffffff", "stroke-width": 2 });
+  add("circle", { cx: 48, cy: 48, r: 29, fill: "none", stroke: rim, "stroke-width": 1.5, opacity: 0.65 });
+
+  const ink = "#283d4d";
+  const paw = (cx, cy, scale = 1, fill = ink) => {
+    add("ellipse", { cx, cy: cy + 5 * scale, rx: 9 * scale, ry: 7 * scale, fill });
+    [[-8, -7], [-3, -12], [3, -12], [8, -7]].forEach(([dx, dy]) =>
+      add("ellipse", { cx: cx + dx * scale, cy: cy + dy * scale, rx: 3 * scale, ry: 4 * scale, fill })
+    );
+  };
+  const ray = (cx, cy, angle, inner, outer, color = ink, width = 3) => {
+    const x1 = cx + Math.cos(angle) * inner;
+    const y1 = cy + Math.sin(angle) * inner;
+    const x2 = cx + Math.cos(angle) * outer;
+    const y2 = cy + Math.sin(angle) * outer;
+    add("path", { d: `M${x1} ${y1}L${x2} ${y2}`, fill: "none", stroke: color, "stroke-width": width, "stroke-linecap": "round" });
+  };
+
+  switch (badge.art_key) {
+    case "seed":
+      add("path", { d: "M47 65 C45 50 48 38 58 30", fill: "none", stroke: ink, "stroke-width": 4, "stroke-linecap": "round" });
+      add("path", { d: "M49 48 C32 47 30 36 33 31 C44 30 51 35 49 48Z", fill: rim, stroke: ink, "stroke-width": 2 });
+      add("path", { d: "M49 45 C61 45 68 38 67 32 C57 30 50 35 49 45Z", fill: "#80b67a", stroke: ink, "stroke-width": 2 });
+      paw(48, 68, 0.55, ink);
+      break;
+    case "bronze-medal":
+    case "gold-medal":
+      add("path", { d: "M37 25L48 43L59 25L65 29L56 49L40 49L31 29Z", fill: rim, stroke: ink, "stroke-width": 2 });
+      add("polygon", { points: "48,38 52,45 60,46 54,52 55,60 48,56 41,60 42,52 36,46 44,45", fill: badge.art_key === "gold-medal" ? "#e5ae37" : "#b9794c", stroke: ink, "stroke-width": 2, "stroke-linejoin": "round" });
+      paw(48, 70, 0.48);
+      break;
+    case "seven-paws":
+      [[38, 40, 0.55], [58, 39, 0.55], [48, 57, 0.65], [34, 62, 0.4], [62, 62, 0.4]].forEach(([x, y, scale]) => paw(x, y, scale));
+      break;
+    case "fireworks":
+      [[48, 43, 0], [32, 54, 0.7], [64, 53, 1.4]].forEach(([cx, cy, offset]) => {
+        for (let i = 0; i < 8; i++) ray(cx, cy, i * Math.PI / 4 + offset, 7, 14, rim, 2.4);
+        add("circle", { cx, cy, r: 3.3, fill: ink });
+      });
+      paw(48, 72, 0.42);
+      break;
+    case "heart-paws":
+      add("path", { d: "M48 65 C42 58 27 48 30 38 C32 29 43 30 48 39 C53 30 64 29 66 38 C69 48 54 58 48 65Z", fill: "#d96a78", stroke: ink, "stroke-width": 2.5 });
+      paw(48, 48, 0.48, "#fff6e8");
+      break;
+    case "bloom":
+      for (let i = 0; i < 6; i++) {
+        const angle = i * Math.PI / 3;
+        add("ellipse", { cx: 48 + Math.cos(angle) * 12, cy: 45 + Math.sin(angle) * 12, rx: 7, ry: 11, transform: `rotate(${i * 60} ${48 + Math.cos(angle) * 12} ${45 + Math.sin(angle) * 12})`, fill: i % 2 ? "#f1a4b4" : "#f6c66f", stroke: ink, "stroke-width": 1.5 });
+      }
+      add("circle", { cx: 48, cy: 45, r: 6, fill: "#fff1c9", stroke: ink, "stroke-width": 2 });
+      paw(48, 69, 0.42);
+      break;
+    case "paw-globe":
+      add("circle", { cx: 48, cy: 45, r: 19, fill: "#80c4c6", stroke: ink, "stroke-width": 2.5 });
+      add("path", { d: "M30 45H66M48 26C39 36 39 54 48 64M48 26C57 36 57 54 48 64M34 35C42 40 54 40 62 35M34 55C42 50 54 50 62 55", fill: "none", stroke: ink, "stroke-width": 1.8 });
+      paw(48, 48, 0.4, "#f6f5e9");
+      break;
+    case "sun-path":
+      for (let i = 0; i < 12; i++) ray(48, 43, i * Math.PI / 6, 18, 25, rim, 2.5);
+      add("circle", { cx: 48, cy: 43, r: 13, fill: "#f6c95e", stroke: ink, "stroke-width": 2.5 });
+      paw(48, 72, 0.42);
+      break;
+    case "leaf-trail":
+      add("path", { d: "M35 58C34 38 49 27 68 30C67 48 57 62 39 64Z", fill: "#83b979", stroke: ink, "stroke-width": 2.5 });
+      add("path", { d: "M38 61C47 51 54 43 63 34M48 51L46 40M54 44L64 46", fill: "none", stroke: ink, "stroke-width": 2, "stroke-linecap": "round" });
+      paw(39, 67, 0.38);
+      break;
+    case "paw-shield":
+      add("path", { d: "M48 25L68 33V47C68 59 59 68 48 74C37 68 28 59 28 47V33Z", fill: "#82bca4", stroke: ink, "stroke-width": 2.5, "stroke-linejoin": "round" });
+      paw(48, 47, 0.72, "#fff6e8");
+      break;
+    case "moon-trail":
+      add("path", { d: "M58 28C43 31 38 51 47 62C53 69 62 69 69 64C65 78 49 81 38 73C22 61 27 37 43 28C48 25 54 25 58 28Z", fill: "#7891bd", stroke: ink, "stroke-width": 2.2 });
+      [[62, 37], [34, 42], [58, 57]].forEach(([x, y]) => add("polygon", { points: `${x},${y-4} ${x+1.3},${y-1.3} ${x+4},${y} ${x+1.3},${y+1.3} ${x},${y+4} ${x-1.3},${y+1.3} ${x-4},${y} ${x-1.3},${y-1.3}`, fill: "#e9c96d" }));
+      break;
+    case "gift-paw":
+      add("rect", { x: 29, y: 40, width: 38, height: 28, rx: 4, fill: "#d96d65", stroke: ink, "stroke-width": 2.5 });
+      add("path", { d: "M48 40V68M29 49H67M48 40C35 39 34 30 40 29C46 28 48 40 48 40ZM48 40C50 28 61 28 61 34C61 39 48 40 48 40Z", fill: "#f0c762", stroke: ink, "stroke-width": 2, "stroke-linejoin": "round" });
+      paw(48, 57, 0.38, "#fff6e8");
+      break;
+    case "snow-paw":
+      for (let i = 0; i < 6; i++) {
+        const angle = i * Math.PI / 3;
+        ray(48, 45, angle, 3, 22, "#648db6", 3);
+        [0.62, -0.62].forEach(side => ray(48 + Math.cos(angle) * 14, 45 + Math.sin(angle) * 14, angle + side, 0, 6, "#648db6", 2));
+      }
+      paw(48, 70, 0.4);
+      break;
+    default:
+      add("circle", { cx: 48, cy: 48, r: 15, fill: rim });
+      add("path", { d: "M48 32L52 42L63 43L55 50L57 61L48 56L39 61L41 50L33 43L44 42Z", fill: face, stroke: ink, "stroke-width": 2 });
+  }
+
+  const year = badge.event_year;
+  if (year) {
+    add("rect", { x: 32, y: 74, width: 32, height: 12, rx: 6, fill: rim, stroke: face, "stroke-width": 1 });
+    const yearText = add("text", { x: 48, y: 82.5, "text-anchor": "middle", fill: "#ffffff", "font-size": 7, "font-family": "system-ui", "font-weight": 700 });
+    yearText.textContent = String(year);
+  }
+  for (let i = 0; i < 2 + (seed % 3); i++) {
+    const angle = (seed % 360 + i * 137) * Math.PI / 180;
+    add("circle", { cx: 48 + Math.cos(angle) * 37, cy: 48 + Math.sin(angle) * 37, r: 1.5 + (i % 2), fill: face });
+  }
+  return svg;
+}
+
+function renderBadgeCatalog() {
+  const catalog = state.badgeCatalog;
+  if (!catalog) return;
+  const list = document.getElementById("badgeCategories");
+  list.replaceChildren();
+  const { earned, available } = catalog.progress;
+  document.getElementById("badgeProgressText").textContent = `${earned}/${available} Abzeichen erreicht`;
+  const progress = document.getElementById("badgeProgressBar");
+  progress.max = Math.max(available, 1);
+  progress.value = earned;
+  document.getElementById("badgeHistoryButton").textContent = state.badgeHistory
+    ? "Aktuelle Abzeichen"
+    : "Dein Rückblick";
+
+  for (const category of catalog.categories) {
+    const badges = catalog.badges.filter(badge => badge.category_id === category.id);
+    const section = document.createElement("section");
+    section.className = "badge-category";
+    const heading = document.createElement("h3");
+    heading.textContent = category.label;
+    section.appendChild(heading);
+    const items = document.createElement("div");
+    items.className = "badge-items";
+    for (const badge of badges) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `badge-tile${badge.earned ? " earned" : " locked"}`;
+      const icon = document.createElement("span");
+      icon.className = "badge-art";
+      icon.setAttribute("aria-hidden", "true");
+      icon.appendChild(badgeArtwork(badge));
+      const title = document.createElement("span");
+      title.className = "badge-title";
+      title.textContent = badge.title;
+      button.append(icon, title);
+      if (badge.show_progress) {
+        const progress = document.createElement("span");
+        progress.className = "badge-tile-progress";
+        progress.textContent = `${badge.progress}/${badge.target}`;
+        button.appendChild(progress);
+      } else if (badge.earned) {
+        const earnedMark = document.createElement("span");
+        earnedMark.className = "badge-tile-earned";
+        earnedMark.textContent = "✓";
+        earnedMark.setAttribute("aria-label", "Freigeschaltet");
+        button.appendChild(earnedMark);
+      }
+      button.setAttribute("aria-label", badge.show_progress
+        ? `${badge.title}, ${badge.earned ? "erreicht" : "Fortschritt"} ${badge.progress} von ${badge.target}`
+        : `${badge.title}${badge.earned ? ", freigeschaltet" : ""}`);
+      button.onclick = () => navigateApp(`badge/${badge.id}`);
+      items.appendChild(button);
+    }
+    if (!badges.length) {
+      const empty = document.createElement("p");
+      empty.className = "hint";
+      empty.textContent = "Noch keine Abzeichen in dieser Kategorie.";
+      items.appendChild(empty);
+    }
+    section.appendChild(items);
+    list.appendChild(section);
+  }
+}
+
+function badgeConditionText(badge) {
+  if (badge.condition_type === "completion-count") {
+    return `Erledige ${badge.target} Gassirunden.`;
+  }
+  if (badge.condition_type === "full-iso-week") {
+    return "Erledige mindestens eine Gassirunde an jedem der sieben Tage einer ISO-Kalenderwoche.";
+  }
+  if (badge.condition_type === "date-completion") {
+    return `Erledige eine Gassirunde am ${fmtDate(badge.condition.date)}.`;
+  }
+  return badge.description;
+}
+
+async function loadBadgeDetail(id) {
+  state.badgeDetail = await api(`/api/badges/${encodeURIComponent(id)}`);
+  const badge = state.badgeDetail;
+  const detailIcon = document.getElementById("badgeDetailIcon");
+  detailIcon.replaceChildren(badgeArtwork(badge));
+  detailIcon.classList.toggle("locked", !badge.earned);
+  document.getElementById("badgeDetailTitle").textContent = badge.title;
+  document.getElementById("badgeDetailCategory").textContent = badge.category_label;
+  document.getElementById("badgeDetailDescription").textContent = badge.description;
+  document.getElementById("badgeDetailCondition").textContent = badgeConditionText(badge);
+  document.getElementById("badgeDetailProgressText").textContent = badge.show_progress
+    ? (badge.earned ? "Freigeschaltet" : `Fortschritt: ${badge.progress}/${badge.target}`)
+    : (badge.earned ? "Freigeschaltet" : "Noch nicht freigeschaltet");
+  const progress = document.getElementById("badgeDetailProgress");
+  progress.hidden = !badge.show_progress;
+  progress.max = Math.max(badge.target, 1);
+  progress.value = badge.progress;
+  const participants = document.getElementById("badgeParticipants");
+  participants.replaceChildren();
+  if (badge.participants.length) {
+    const title = document.createElement("h3");
+    title.textContent = "Teilnehmer mit diesem Abzeichen";
+    participants.appendChild(title);
+    for (const participant of badge.participants) {
+      const item = document.createElement("div");
+      item.className = "badge-participant";
+      const avatar = document.createElement("span");
+      avatar.className = "badge-participant-avatar";
+      avatar.style.background = participant.color;
+      if (participant.avatar_url) {
+        const image = document.createElement("img");
+        image.src = participant.avatar_url;
+        image.alt = "";
+        avatar.appendChild(image);
+      } else {
+        avatar.textContent = participant.name.trim().slice(0, 1).toUpperCase();
+      }
+      const name = document.createElement("span");
+      name.textContent = participant.name;
+      item.append(avatar, name);
+      participants.appendChild(item);
+    }
+  }
+}
+
+async function loadProfile() {
+  state.profile = await api("/api/profile");
+  renderProfile();
+}
+
+async function loadBadgeCatalog(history = false) {
+  state.badgeHistory = history;
+  state.badgeCatalog = await api(`/api/badges${history ? "?history=true" : ""}`);
+  renderBadgeCatalog();
+}
+
+function navigateApp(route) {
+  const hash = `#${route}`;
+  if (location.hash === hash) applyAppRoute();
+  else location.hash = route;
+}
+
+function applyAppRoute() {
+  const route = decodeURIComponent(location.hash.slice(1));
+  const isProfile = route === "profile" || route === "history" || route.startsWith("badge/");
+  document.getElementById("planView").hidden = isProfile;
+  document.getElementById("profileView").hidden = !isProfile;
+  document.getElementById("planTabButton").classList.toggle("active", !isProfile);
+  document.getElementById("profileTabButton").classList.toggle("active", isProfile);
+  const detailId = route.startsWith("badge/") ? route.slice("badge/".length) : null;
+  document.getElementById("badgeOverview").hidden = Boolean(detailId);
+  document.getElementById("badgeDetail").hidden = !detailId;
+  if (isProfile && state.me && !state.profile) loadProfile().catch(error => toast(error.message));
+  if (isProfile && state.me && (!state.badgeCatalog || state.badgeHistory !== (route === "history"))) {
+    loadBadgeCatalog(route === "history").catch(error => toast(error.message));
+  }
+  if (detailId && state.me && state.badgeDetail?.id !== detailId) {
+    loadBadgeDetail(detailId).catch(error => toast(error.message));
+  }
 }
 
 function renderTabs() {
@@ -566,6 +890,55 @@ async function removePerson(p) {
 
 // ---------- Init ---------------------------------------------------------------
 
+document.getElementById("planTabButton").onclick = () => navigateApp("plan");
+document.getElementById("profileTabButton").onclick = () => navigateApp("profile");
+document.getElementById("headerLevelButton").onclick = () => navigateApp("profile");
+window.addEventListener("hashchange", applyAppRoute);
+document.getElementById("avatarButton").onclick = () => {
+  if (state.me) document.getElementById("avatarUpload").click();
+};
+document.getElementById("avatarUpload").onchange = async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+  try {
+    state.profile = await api("/api/profile/avatar", {
+      method: "PUT",
+      headers: { "Content-Type": file.type },
+      body: file,
+    });
+    renderProfile();
+    toast("Profilbild gespeichert");
+  } catch (error) { toast(error.message); }
+  event.target.value = "";
+};
+document.getElementById("removeAvatarButton").onclick = async () => {
+  try {
+    await api("/api/profile/avatar", { method: "DELETE" });
+    await loadProfile();
+    toast("Profilbild entfernt");
+  } catch (error) { toast(error.message); }
+};
+document.getElementById("profilePreferencesForm").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    state.profile = await api("/api/profile/preferences", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        badge_visibility: document.getElementById("badgeVisibilitySetting").checked,
+        push_enabled: document.getElementById("pushSetting").checked,
+        reminders_enabled: document.getElementById("reminderSetting").checked,
+      }),
+    });
+    renderProfile();
+    toast("Profileinstellungen gespeichert");
+  } catch (error) { toast(error.message); }
+};
+document.getElementById("badgeHistoryButton").onclick = () =>
+  navigateApp(state.badgeHistory ? "profile" : "history");
+document.getElementById("badgeBackButton").onclick = () =>
+  navigateApp(state.badgeHistory ? "history" : "profile");
+
 document.getElementById("prevWeek").onclick = () => shiftWeek(-7);
 document.getElementById("nextWeek").onclick = () => shiftWeek(7);
 document.getElementById("todayBtn").onclick = () => { state.year = null; state.week = null; loadWeek().catch(e => toast(e.message)); };
@@ -727,7 +1100,11 @@ async function initialize() {
     }
   }
   loadWeek()
-    .then(() => loadGamification())
+    .then(async () => {
+      await loadGamification();
+      if (state.me) await loadProfile();
+      applyAppRoute();
+    })
     .catch(e => toast(e.message));
 }
 

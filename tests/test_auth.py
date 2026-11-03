@@ -12,7 +12,7 @@ from itsdangerous import TimestampSigner
 from app import main as main_module
 from app.auth import hash_password, verify_password
 from app.db import Database
-from app.main import create_app
+from app.main import avatar_mime_type, create_app
 
 
 def test_password_hash_uses_scrypt_and_verifies():
@@ -121,6 +121,174 @@ def test_gamification_requires_auth_and_own_completion(tmp_path, monkeypatch):
         assert client.delete(
             f"/api/completions/2026-10-12/morning?person_id={other['id']}"
         ).status_code == 403
+
+
+def test_avatar_format_detection_accepts_only_bounded_image_headers():
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    jpeg = bytes.fromhex(
+        "ffd8 ffc0 0011 08 0001 0001 03 011100 021100 031100 ffd9"
+    )
+    webp = (
+        b"RIFF" + (22).to_bytes(4, "little") + b"WEBPVP8X"
+        + (10).to_bytes(4, "little") + bytes(10)
+    )
+    oversized_png = bytearray(png)
+    oversized_png[16:20] = (5000).to_bytes(4, "big")
+    assert avatar_mime_type(png) == "image/png"
+    assert avatar_mime_type(jpeg) == "image/jpeg"
+    assert avatar_mime_type(webp) == "image/webp"
+    assert avatar_mime_type(bytes(oversized_png)) is None
+    assert avatar_mime_type(b"<svg/>") is None
+
+
+def test_profile_avatar_upload_is_validated_and_account_scoped(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "avatar-api.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+    png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+
+    with TestClient(app) as client:
+        assert client.put("/api/profile/avatar", content=png).status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        uploaded = client.put(
+            "/api/profile/avatar", content=png, headers={"Content-Type": "image/png"}
+        )
+        assert uploaded.status_code == 200, uploaded.text
+        assert uploaded.json()["avatar_url"]
+        image = client.get("/api/profile/avatar")
+        assert image.status_code == 200
+        assert image.headers["content-type"] == "image/png"
+        assert image.headers["x-content-type-options"] == "nosniff"
+        assert image.content == png
+        assert client.put(
+            "/api/profile/avatar", content=b"<svg/>", headers={"Content-Type": "image/svg+xml"}
+        ).status_code == 415
+        assert client.put(
+            "/api/profile/avatar", content=png, headers={"Content-Type": "image/jpeg"}
+        ).status_code == 422
+        too_large = client.put(
+            "/api/profile/avatar",
+            content=png + b"0" * (2 * 1024 * 1024),
+            headers={"Content-Type": "image/png"},
+        )
+        assert too_large.status_code == 413
+        assert client.delete("/api/profile/avatar").status_code == 204
+        assert client.get("/api/profile/avatar").status_code == 404
+        with db._connect() as con:
+            assert con.execute(
+                "SELECT avatar_data FROM persons WHERE id = ?", (laura["id"],)
+            ).fetchone()[0] is None
+        assert jan["id"] != laura["id"]
+
+
+def test_profile_api_and_preferences_are_account_scoped(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "profile-api.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.get("/api/profile").status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        profile = client.get("/api/profile")
+        assert profile.status_code == 200
+        assert profile.json()["id"] == jan["id"]
+        assert profile.json()["level_name"] == "Gassi-Starter"
+        updated = client.patch("/api/profile/preferences", json={
+            "badge_visibility": True, "push_enabled": True,
+        })
+        assert updated.status_code == 200
+        assert updated.json()["badge_visibility"] is True
+        assert updated.json()["push_enabled"] is True
+        updated = client.patch("/api/profile/preferences", json={"reminders_enabled": True})
+        assert updated.status_code == 200
+        assert updated.json()["reminders_enabled"] is True
+        with db._connect() as con:
+            values = con.execute(
+                "SELECT badge_visibility, push_enabled, reminders_enabled "
+                "FROM persons WHERE id = ?", (laura["id"],)
+            ).fetchone()
+        assert tuple(values) == (0, 0, 0)
+
+
+def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 11, 3, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    db_path = tmp_path / "badge-catalog.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    db.award_badges(laura["id"], ["first-walk"])
+    avatar_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    assert db.save_avatar(laura["id"], avatar_png, "image/png")
+    assert db.add_walk_completion(jan["id"], "2026-02-14", "morning", "manual")
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        current = client.get("/api/badges").json()
+        assert current["progress"]["available"] == 10
+        current_ids = {badge["id"] for badge in current["badges"]}
+        assert {
+            "st-nicholas-walk-2026", "winter-solstice-walk-2026",
+            "new-year-walk-2027", "valentines-walk-2027",
+            "spring-walk-2027", "earth-day-walk-2027",
+        } <= current_ids
+        assert "summer-solstice-walk-2027" not in current_ids
+        assert "valentines-walk-2026" not in current_ids
+        one_off_badge = next(
+            badge for badge in current["badges"] if badge["id"] == "valentines-walk-2027"
+        )
+        assert one_off_badge["show_progress"] is False
+        assert one_off_badge["art_key"] == "heart-paws"
+        category_ids = {category["id"] for category in current["categories"]}
+        assert "loyalty-long-term" not in category_ids
+        assert "community-sharing" not in category_ids
+        history = client.get("/api/badges?history=true").json()
+        assert len(history["badges"]) == 8
+        valentines = next(
+            badge for badge in history["badges"] if badge["id"] == "valentines-walk-2026"
+        )
+        assert valentines["earned"] is True
+        assert valentines["show_progress"] is False
+        assert valentines["progress"] == 1
+        detail = client.get("/api/badges/first-walk").json()
+        assert detail["participants"] == []
+        assert db.update_profile_preferences(laura["id"], badge_visibility=True)
+        detail = client.get("/api/badges/first-walk").json()
+        assert [person["name"] for person in detail["participants"]] == ["Laura"]
+        avatar_url = detail["participants"][0]["avatar_url"]
+        assert avatar_url
+        avatar = client.get(avatar_url)
+        assert avatar.status_code == 200
+        assert avatar.headers["content-type"] == "image/png"
+        assert avatar.content == avatar_png
+        assert db.update_profile_preferences(laura["id"], badge_visibility=False)
+        detail = client.get("/api/badges/first-walk").json()
+        assert detail["participants"] == []
+        assert client.get(avatar_url).status_code == 404
+        assert client.get("/api/badges/missing").status_code == 404
 
 
 def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):

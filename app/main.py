@@ -5,7 +5,9 @@ DB-Pfad per Umgebungsvariable GASSI_DB überschreibbar (Default: ./gassi.sqlite3
 """
 from __future__ import annotations
 
+import calendar
 import hmac
+import json
 import os
 import secrets
 import sqlite3
@@ -24,7 +26,7 @@ from itsdangerous import BadSignature, URLSafeSerializer
 
 from .auth import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .db import Database
-from .gamification import COUNT_BADGE_IDS, group_progress, summarize_completions
+from .gamification import badge_progress, group_progress, summarize_completions
 from .ical import SLOT_TIMES, build_ics
 from .scheduler import (
     Assignment,
@@ -38,6 +40,65 @@ from .scheduler import (
 STATIC_DIR = Path(__file__).parent / "static"
 BERLIN = ZoneInfo("Europe/Berlin")
 WALK_WINDOW_TOLERANCE = timedelta(minutes=30)
+MAX_AVATAR_BYTES = 2 * 1024 * 1024
+MAX_AVATAR_DIMENSION = 4096
+
+
+def avatar_mime_type(data: bytes) -> str | None:
+    if data.startswith(b"\x89PNG\r\n\x1a\n") and len(data) >= 45:
+        if data[12:16] != b"IHDR" or data[8:12] != b"\x00\x00\x00\r":
+            return None
+        width = int.from_bytes(data[16:20], "big")
+        height = int.from_bytes(data[20:24], "big")
+        if (
+            0 < width <= MAX_AVATAR_DIMENSION
+            and 0 < height <= MAX_AVATAR_DIMENSION
+            and data.endswith(b"\x00\x00\x00\x00IEND\xaeB`\x82")
+        ):
+            return "image/png"
+        return None
+
+    if data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9"):
+        offset = 2
+        while offset + 4 <= len(data) and data[offset] == 0xFF:
+            while offset < len(data) and data[offset] == 0xFF:
+                offset += 1
+            if offset >= len(data):
+                break
+            marker = data[offset]
+            offset += 1
+            if marker in (0xD8, 0xD9, 0x01) or 0xD0 <= marker <= 0xD7:
+                continue
+            segment_length = int.from_bytes(data[offset:offset + 2], "big")
+            if segment_length < 2 or offset + segment_length > len(data):
+                return None
+            if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                height = int.from_bytes(data[offset + 3:offset + 5], "big")
+                width = int.from_bytes(data[offset + 5:offset + 7], "big")
+                if 0 < width <= MAX_AVATAR_DIMENSION and 0 < height <= MAX_AVATAR_DIMENSION:
+                    return "image/jpeg"
+                return None
+            offset += segment_length
+        return None
+
+    if len(data) >= 30 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        if int.from_bytes(data[4:8], "little") != len(data) - 8:
+            return None
+        chunk = data[12:16]
+        if chunk == b"VP8X":
+            width = 1 + int.from_bytes(data[24:27], "little")
+            height = 1 + int.from_bytes(data[27:30], "little")
+        elif chunk == b"VP8L" and data[20] == 0x2F:
+            width = 1 + data[21] + ((data[22] & 0x3F) << 8)
+            height = 1 + ((data[22] >> 6) & 0x03) + (data[23] << 2) + ((data[24] & 0x0F) << 10)
+        elif chunk == b"VP8 " and data[23:26] == b"\x9d\x01\x2a":
+            width = int.from_bytes(data[26:28], "little") & 0x3FFF
+            height = int.from_bytes(data[28:30], "little") & 0x3FFF
+        else:
+            return None
+        if 0 < width <= MAX_AVATAR_DIMENSION and 0 < height <= MAX_AVATAR_DIMENSION:
+            return "image/webp"
+    return None
 
 
 def berlin_now() -> datetime:
@@ -91,6 +152,12 @@ class PasswordChangeIn(BaseModel):
 
 class AdminPasswordResetIn(BaseModel):
     new_password: str = Field(min_length=12, max_length=256)
+
+
+class ProfilePreferencesIn(BaseModel):
+    badge_visibility: bool | None = None
+    push_enabled: bool | None = None
+    reminders_enabled: bool | None = None
 
 
 class WalkCompletionIn(BaseModel):
@@ -208,12 +275,189 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         def logout(request: Request):
             request.session.clear()
 
+        @app.get("/api/profile")
+        def get_profile(account: dict | None = Depends(require_account)):
+            assert account is not None
+            profile = db.profile(account["id"])
+            if profile is None:
+                raise HTTPException(404, "Profil nicht gefunden")
+            progress = summarize_completions(db.list_walk_completions(account["id"]))
+            profile["level"] = progress["level"]
+            profile["level_name"] = db.level_definition(progress["level"])["name"]
+            profile["points"] = progress["points"]
+            return profile
+
+        @app.patch("/api/profile/preferences")
+        def update_profile_preferences(
+            body: ProfilePreferencesIn,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            changed = db.update_profile_preferences(
+                account["id"],
+                badge_visibility=body.badge_visibility,
+                push_enabled=body.push_enabled,
+                reminders_enabled=body.reminders_enabled,
+            )
+            if not changed:
+                raise HTTPException(404, "Profil nicht gefunden")
+            return get_profile(account)
+
+        @app.put("/api/profile/avatar")
+        async def upload_profile_avatar(
+            request: Request,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            content_type = request.headers.get("content-type", "").split(";", 1)[0].lower()
+            if content_type not in {"image/png", "image/jpeg", "image/webp"}:
+                raise HTTPException(415, "Nur PNG-, JPEG- und WebP-Bilder sind zulässig")
+            content_length = request.headers.get("content-length")
+            if content_length:
+                try:
+                    if int(content_length) > MAX_AVATAR_BYTES:
+                        raise HTTPException(413, "Profilbild darf höchstens 2 MiB groß sein")
+                except ValueError:
+                    raise HTTPException(400, "Ungültige Content-Length")
+            body = bytearray()
+            async for chunk in request.stream():
+                body.extend(chunk)
+                if len(body) > MAX_AVATAR_BYTES:
+                    raise HTTPException(413, "Profilbild darf höchstens 2 MiB groß sein")
+            detected_type = avatar_mime_type(bytes(body))
+            if detected_type != content_type:
+                raise HTTPException(422, "Dateiinhalt passt nicht zum Bildformat")
+            if not db.save_avatar(account["id"], bytes(body), detected_type):
+                raise HTTPException(404, "Profil nicht gefunden")
+            return get_profile(account)
+
+        @app.get("/api/profile/avatar")
+        def get_profile_avatar(account: dict | None = Depends(require_account)):
+            assert account is not None
+            image = db.avatar(account["id"])
+            if image is None:
+                raise HTTPException(404, "Kein Profilbild vorhanden")
+            return Response(
+                content=image[0],
+                media_type=image[1],
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        @app.delete("/api/profile/avatar", status_code=204)
+        def delete_profile_avatar(account: dict | None = Depends(require_account)):
+            assert account is not None
+            if not db.remove_avatar(account["id"]):
+                raise HTTPException(404, "Profil nicht gefunden")
+
+        def badge_view(definition: dict, completions: list[dict], earned_ids: set[str]) -> dict:
+            result = badge_progress(
+                definition, completions, definition["id"] in earned_ids
+            )
+            result["condition"] = json.loads(result.pop("condition_json") or "{}")
+            result.pop("icon", None)
+            result.pop("sort_order", None)
+            return result
+
+        @app.get("/api/badges")
+        def get_badge_catalog(
+            history: bool = Query(False),
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            sync_person_badges(account["id"])
+            completions = db.list_walk_completions(account["id"])
+            earned_ids = {
+                row["badge_id"] for row in db.list_person_badges(account["id"])
+            }
+            definitions = db.badge_definitions()
+            today_date = berlin_now().date()
+            today = today_date.isoformat()
+            horizon_month = today_date.month + 6
+            horizon_year = today_date.year + (horizon_month - 1) // 12
+            horizon_month = (horizon_month - 1) % 12 + 1
+            horizon = today_date.replace(
+                year=horizon_year,
+                month=horizon_month,
+                day=min(today_date.day, calendar.monthrange(horizon_year, horizon_month)[1]),
+            ).isoformat()
+            if history:
+                selected = [
+                    item for item in definitions
+                    if item["season"] is not None and item["ends_at"] < today
+                ]
+            else:
+                selected = [
+                    item for item in definitions
+                    if item["season"] is None
+                    or (item["starts_at"] <= horizon and item["ends_at"] >= today)
+                ]
+            badges = [badge_view(item, completions, earned_ids) for item in selected]
+            earned_count = sum(badge["earned"] for badge in badges)
+            visible_category_ids = {badge["category_id"] for badge in badges}
+            categories = [
+                category for category in db.badge_categories()
+                if category["id"] in visible_category_ids
+            ]
+            return {
+                "categories": categories,
+                "badges": badges,
+                "progress": {"earned": earned_count, "available": len(selected)},
+                "view": "history" if history else "current",
+            }
+
+        @app.get("/api/badges/{badge_id}/participants/{person_id}/avatar")
+        def get_badge_participant_avatar(
+            badge_id: str,
+            person_id: int,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            image = db.badge_participant_avatar(badge_id, person_id)
+            if image is None:
+                raise HTTPException(404, "Profilbild nicht verfügbar")
+            return Response(
+                content=image[0],
+                media_type=image[1],
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        @app.get("/api/badges/{badge_id}")
+        def get_badge_details(
+            badge_id: str,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            definition = db.badge_definition(badge_id)
+            if definition is None:
+                raise HTTPException(404, "Abzeichen nicht gefunden")
+            sync_person_badges(account["id"])
+            completions = db.list_walk_completions(account["id"])
+            earned_ids = {
+                row["badge_id"] for row in db.list_person_badges(account["id"])
+            }
+            return {
+                **badge_view(definition, completions, earned_ids),
+                "participants": db.badge_participants(badge_id),
+            }
+
         @app.get("/api/me")
         def get_me(account: dict | None = Depends(require_account)):
             assert account is not None
+            progress = summarize_completions(db.list_walk_completions(account["id"]))
             return {
                 "person": {
-                    key: account[key] for key in ("id", "name", "color", "active", "is_admin")
+                    **{
+                        key: account[key]
+                        for key in ("id", "name", "color", "active", "is_admin")
+                    },
+                    "level": progress["level"],
+                    "level_name": db.level_definition(progress["level"])["name"],
                 },
                 "calendar_url": calendar_url(account["id"]),
             }
@@ -411,13 +655,24 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
 
     def sync_person_badges(person_id: int) -> None:
         completions = db.list_walk_completions(person_id)
-        badge_ids = {
-            badge["id"] for badge in summarize_completions(completions)["badges"]
+        already_earned = {row["badge_id"] for row in db.list_person_badges(person_id)}
+        definitions = db.badge_definitions()
+        reached_ids = {
+            definition["id"]
+            for definition in definitions
+            if badge_progress(
+                definition, completions, definition["id"] in already_earned
+            )["reached_now"]
         }
-        db.award_badges(person_id, list(badge_ids))
+        db.award_badges(person_id, list(reached_ids))
         db.remove_badges(
             person_id,
-            [badge_id for badge_id in COUNT_BADGE_IDS if badge_id not in badge_ids],
+            [
+                definition["id"]
+                for definition in definitions
+                if definition["retention"] == "current-count"
+                and definition["id"] not in reached_ids
+            ],
         )
 
     def stored_badges() -> dict[int, set[str]]:
@@ -454,8 +709,11 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         viewer_id = account["id"] if account else person_id
         active = db.active_walk(viewer_id) if viewer_id is not None else None
         window = current_walk_window()
+        progress = group_progress(persons, completions, stored_badges())
+        for person in progress:
+            person["level_name"] = db.level_definition(person["level"])["name"]
         return {
-            "persons": group_progress(persons, completions, stored_badges()),
+            "persons": progress,
             "completions": completions,
             "walk_status": {
                 "active": active,
