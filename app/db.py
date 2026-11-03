@@ -56,6 +56,41 @@ CREATE TABLE IF NOT EXISTS weekly_plans (
 )
 """
 
+WALK_COMPLETIONS_DDL = """
+CREATE TABLE IF NOT EXISTS walk_completions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
+    created_at TEXT NOT NULL,
+    UNIQUE (person_id, walk_date, slot)
+)
+"""
+
+WALK_COMPLETIONS_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_walk_completions_person_date
+ON walk_completions (person_id, walk_date)
+"""
+
+ACTIVE_WALKS_DDL = """
+CREATE TABLE IF NOT EXISTS active_walks (
+    person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    started_at TEXT NOT NULL
+)
+"""
+
+PERSON_BADGES_DDL = """
+CREATE TABLE IF NOT EXISTS person_badges (
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    badge_id TEXT NOT NULL,
+    awarded_at TEXT NOT NULL,
+    PRIMARY KEY (person_id, badge_id)
+)
+"""
+
 DEFAULT_COLORS = [
     "#4a90d9",
     "#e67e22",
@@ -110,6 +145,10 @@ class Database:
                     con.execute("ALTER TABLE accounts ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
             con.execute(ACTIVITY_DDL)
             con.execute(WEEKLY_PLANS_DDL)
+            con.execute(WALK_COMPLETIONS_DDL)
+            con.execute(WALK_COMPLETIONS_INDEX_DDL)
+            con.execute(ACTIVE_WALKS_DDL)
+            con.execute(PERSON_BADGES_DDL)
             cols = {r[1] for r in con.execute("PRAGMA table_info(prefs)")}
             if cols and "date" in cols:
                 # Migration: alte datumsbasierte Tabelle (person_id, date, slot, value)
@@ -361,6 +400,140 @@ class Database:
                 (person_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    # --- Erledigte Gassirunden ----------------------------------------------
+
+    def add_walk_completion(
+        self, person_id: int, walk_date: str, slot: str, source: str
+    ) -> bool:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                INSERT OR IGNORE INTO walk_completions
+                    (person_id, walk_date, slot, source, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (person_id, walk_date, slot, source, created_at),
+            )
+        return cur.rowcount > 0
+
+    def remove_walk_completion(self, person_id: int, walk_date: str, slot: str) -> bool:
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                DELETE FROM walk_completions
+                WHERE person_id = ? AND walk_date = ? AND slot = ?
+                """,
+                (person_id, walk_date, slot),
+            )
+        return cur.rowcount > 0
+
+    def list_walk_completions(self, person_id: int | None = None) -> list[dict]:
+        query = """
+            SELECT person_id, walk_date AS date, slot, source, created_at
+            FROM walk_completions
+        """
+        params: tuple[int, ...] = ()
+        if person_id is not None:
+            query += " WHERE person_id = ?"
+            params = (person_id,)
+        query += " ORDER BY walk_date, slot, person_id"
+        with self._connect() as con:
+            rows = con.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def active_walk(self, person_id: int) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT person_id, walk_date AS date, slot, started_at
+                FROM active_walks WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def start_walk(self, person_id: int, walk_date: str, slot: str, started_at: str) -> dict:
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO active_walks (person_id, walk_date, slot, started_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (person_id, walk_date, slot, started_at),
+            )
+            row = con.execute(
+                """
+                SELECT person_id, walk_date AS date, slot, started_at
+                FROM active_walks WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def finish_walk(self, person_id: int, ended_at: str) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT person_id, walk_date AS date, slot
+                FROM active_walks WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            cur = con.execute(
+                """
+                INSERT OR IGNORE INTO walk_completions
+                    (person_id, walk_date, slot, source, created_at)
+                VALUES (?, ?, ?, 'manual', ?)
+                """,
+                (row["person_id"], row["date"], row["slot"], ended_at),
+            )
+            con.execute("DELETE FROM active_walks WHERE person_id = ?", (person_id,))
+        return {
+            "person_id": row["person_id"],
+            "date": row["date"],
+            "slot": row["slot"],
+            "source": "manual",
+            "created": cur.rowcount > 0,
+        }
+
+    def award_badges(self, person_id: int, badge_ids: list[str]) -> None:
+        if not badge_ids:
+            return
+        awarded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO person_badges (person_id, badge_id, awarded_at)
+                VALUES (?, ?, ?)
+                """,
+                [(person_id, badge_id, awarded_at) for badge_id in badge_ids],
+            )
+
+    def list_person_badges(self, person_id: int | None = None) -> list[dict]:
+        query = "SELECT person_id, badge_id, awarded_at FROM person_badges"
+        params: tuple[int, ...] = ()
+        if person_id is not None:
+            query += " WHERE person_id = ?"
+            params = (person_id,)
+        query += " ORDER BY person_id, awarded_at, badge_id"
+        with self._connect() as con:
+            rows = con.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_badges(self, person_id: int, badge_ids: list[str]) -> None:
+        if not badge_ids:
+            return
+        placeholders = ", ".join("?" for _ in badge_ids)
+        with self._connect() as con:
+            con.execute(
+                f"DELETE FROM person_badges WHERE person_id = ? AND badge_id IN ({placeholders})",
+                (person_id, *badge_ids),
+            )
 
     # --- Prioritäten (allgemeingültig pro Wochentag) ------------------------
 

@@ -24,6 +24,11 @@ Wochenplan** und stellt ihn als Tabelle dar.
 - 📅 Persönlicher iCal-Abo-Link pro Teilnehmer für Apple Kalender und andere
   Kalender-Apps. Der Kalender aktualisiert sich beim nächsten Abruf durch die
   Kalender-App; Änderungen werden nicht als Push zugestellt.
+- 🏅 Gamification: Erledigte Gassirunden geben je einen Punkt; daraus werden
+  Level und Badges für die Gruppe berechnet. Die Level-Schwellen steigen
+  progressiv (10, 25, 45, 70, … Punkte). Runden werden nur im jeweiligen
+  Zeitfenster mit 30 Minuten Toleranz gestartet; manuelle Runden laufen über
+  „Jetzt Gassi gehen“ und „Gassi-Runde beenden“.
 - 💾 Persistenz in SQLite (kein Setup nötig)
 
 ## Schnellstart
@@ -188,6 +193,11 @@ pytest
 | `POST` | `/auth/login` | Mit Name und Passwort anmelden |
 | `GET` | `/api/persons` | Teilnehmer der Gruppe auflisten (angemeldet) |
 | `PUT` | `/api/prefs` | Eigene Priorität setzen: `weekday` (1=Mo…7=So), `slot`, `value` (`-1` blockiert, `1–3`, `null` löscht) |
+| `GET` | `/api/gamification` | Gruppenfortschritt, Abschlussstatus und eigene aktive Runde anzeigen |
+| `POST` | `/api/walks/start` | Gassi-Session im aktuellen Zeitfenster starten |
+| `POST` | `/api/walks/end` | Aktive Gassi-Session beenden und Abschluss speichern |
+| `PUT` | `/api/completions` | Zugewiesene eigene Planrunde im aktuellen Zeitfenster abschließen |
+| `DELETE` | `/api/completions/{date}/{slot}` | Eigenen Abschluss entfernen |
 | `GET` | `/api/calendar/{token}.ics` | Persönlicher iCal-Feed (Abo-Link ist widerrufbar) |
 | `POST` | `/api/me/calendar-token` | Persönlichen Kalender-Link erneuern |
 

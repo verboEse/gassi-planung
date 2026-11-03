@@ -4,6 +4,7 @@ import base64
 import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
@@ -80,6 +81,46 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
         new_url = client.post("/api/me/calendar-token").json()["calendar_url"]
         assert client.get(urlsplit(old_url).path).status_code == 404
         assert client.get(urlsplit(new_url).path).status_code == 200
+
+
+def test_gamification_requires_auth_and_own_completion(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 10, 12, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    db_path = tmp_path / "gamification-auth.sqlite3"
+    db = Database(db_path)
+    owner = db.add_account("Jan", hash_password("jan family password"))
+    other = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.get("/api/gamification").status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        foreign = client.post(f"/api/walks/start?person_id={other['id']}")
+        assert foreign.status_code == 403
+        own = client.post("/api/walks/start")
+        assert own.status_code == 200
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 10, 12, 7, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        assert client.post("/api/walks/end").status_code == 200
+        assert db.add_walk_completion(other["id"], "2026-10-12", "noon", "manual")
+        progress = client.get("/api/gamification").json()
+        assert {person["name"] for person in progress["persons"]} == {"Jan", "Laura"}
+        assert {(row["person_id"], row["slot"]) for row in progress["completions"]} == {
+            (owner["id"], "morning"),
+            (other["id"], "noon"),
+        }
+        assert client.delete(
+            f"/api/completions/2026-10-12/morning?person_id={other['id']}"
+        ).status_code == 403
 
 
 def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):

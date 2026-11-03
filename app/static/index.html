@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=2">
 </head>
 <body>
   <header>
@@ -50,6 +50,17 @@
       <summary>Plan</summary>
       <div id="planTable" class="table-wrap"></div>
       <div id="planStats" class="stats"></div>
+    </details>
+
+    <details class="card" id="gamificationSection">
+      <summary>Gamification</summary>
+      <div id="gamificationSummary" class="gamification-summary"></div>
+      <div id="walkSessionControls">
+        <p id="walkSessionHint" class="hint"></p>
+        <button id="walkSessionButton" type="button" hidden>Jetzt Gassi gehen</button>
+      </div>
+      <div id="gamificationPeople" class="gamification-people"></div>
+      <div id="myCompletions" class="completion-list"></div>
     </details>
 
     <details class="card" id="editSection">
@@ -110,6 +121,6 @@
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=2"></script>
 </body>
 </html>

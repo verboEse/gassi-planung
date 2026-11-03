@@ -8,12 +8,14 @@ const state = {
   selectedPerson: null,
   adminData: null,
   adminUserId: null,
+  gamification: null,
 };
 
 let authMode = "login";
 let weekRequest = null;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
+const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
 const PREF_OPTIONS = [
   { value: "", label: "–" },
   { value: "3", label: "3 gern" },
@@ -38,6 +40,12 @@ function isoWeekOf(date) {
 function fmtDate(iso) {
   const [, m, d] = iso.split("-");
   return `${d}.${m}.`;
+}
+
+function hasCompletion(date, slot, personId) {
+  return Boolean(state.gamification?.completions?.some(completion =>
+    completion.person_id === personId && completion.date === date && completion.slot === slot
+  ));
 }
 
 async function api(path, options) {
@@ -97,6 +105,7 @@ function renderAll() {
   document.getElementById("weekLabel").textContent = `KW ${state.week} / ${state.year}`;
   renderPlan();
   renderStats();
+  renderGamification();
   renderTabs();
   renderCalLink();
   renderGrid();
@@ -120,13 +129,33 @@ function renderPlan() {
       if (cell.unassigned) {
         html += `<td class="unassigned">⚠️ frei</td>`;
       } else {
-        const dots = "●".repeat(cell.pref) + "○".repeat(3 - cell.pref);
-        html += `<td><span class="assignee" style="background:${cell.color}">${cell.name}<span class="pref-dots">${dots}</span></span></td>`;
+        const completed = hasCompletion(day.date, s, cell.person_id);
+        const isMine = state.me?.person.id === cell.person_id;
+        const window = state.gamification?.walk_status?.window;
+        const active = state.gamification?.walk_status?.active;
+        const canToggle = completed || (
+          isMine && !active && window?.date === day.date && window?.slot === s
+        );
+        if (isMine && canToggle) {
+          html += `<td><button type="button" class="assignee walk-toggle${completed ? " done" : ""}" style="background:${cell.color}" data-walk-date="${day.date}" data-walk-slot="${s}" title="${completed ? "Erledigt" : "Als erledigt markieren"}" aria-label="${cell.name}: ${completed ? "erledigt" : "als erledigt markieren"}">${cell.name}${completed ? " ✓" : ""}</button></td>`;
+        } else {
+          const marker = completed
+            ? '<span class="completion-mark" title="Erledigt" aria-label="Erledigt">✓</span>'
+            : "";
+          html += `<td><span class="assignee" style="background:${cell.color}">${cell.name}${marker}</span></td>`;
+        }
       }
     }
     html += "</tr>";
   }
   wrap.innerHTML = html + "</tbody></table>";
+  wrap.querySelectorAll(".walk-toggle").forEach(button => {
+    button.onclick = () => toggleCompletion(
+      button.dataset.walkDate,
+      button.dataset.walkSlot,
+      button.classList.contains("done"),
+    ).catch(e => toast(e.message));
+  });
 }
 
 function renderStats() {
@@ -136,6 +165,101 @@ function renderStats() {
   el.innerHTML = counts.map(c =>
     `<span class="stat-chip" style="border-color:${c.color}"><b>${c.name}</b>: ${c.count}×</span>`
   ).join("");
+}
+
+function renderGamification() {
+  const summary = document.getElementById("gamificationSummary");
+  const people = document.getElementById("gamificationPeople");
+  const completions = document.getElementById("myCompletions");
+  const sessionButton = document.getElementById("walkSessionButton");
+  const sessionHint = document.getElementById("walkSessionHint");
+  if (!state.gamification) {
+    summary.textContent = "";
+    people.replaceChildren();
+    completions.replaceChildren();
+    sessionButton.hidden = true;
+    sessionHint.textContent = "";
+    return;
+  }
+  const me = state.gamification.persons.find(person => person.id === state.me?.person.id);
+  summary.textContent = me
+    ? `Du: ${me.points} Punkte · Level ${me.level}`
+    : "Fortschritt der Gruppe";
+  const walkStatus = state.gamification.walk_status;
+  sessionButton.hidden = !state.me;
+  sessionButton.disabled = Boolean(state.me) && !walkStatus.active && !walkStatus.can_start;
+  sessionButton.textContent = walkStatus.active ? "Gassi-Runde beenden" : "Jetzt Gassi gehen";
+  sessionHint.textContent = walkStatus.active
+    ? `Gestartet: ${SLOT_LABELS[walkStatus.active.slot]}`
+    : walkStatus.window
+      ? `Aktuelles Zeitfenster: ${SLOT_LABELS[walkStatus.window.slot]}`
+      : "Start nur im jeweiligen Zeitfenster mit 30 Minuten Toleranz möglich.";
+  people.replaceChildren();
+  for (const person of state.gamification.persons) {
+    const row = document.createElement("div");
+    row.className = "gamification-person";
+    const name = document.createElement("strong");
+    name.textContent = person.name;
+    row.append(name, document.createTextNode(`${person.points} Punkte · Level ${person.level}`));
+    for (const badge of person.badges) {
+      const badgeEl = document.createElement("span");
+      badgeEl.className = "badge-chip";
+      badgeEl.textContent = badge.label;
+      row.appendChild(badgeEl);
+    }
+    people.appendChild(row);
+  }
+  completions.replaceChildren();
+  if (!state.me) return;
+  const ownCompletions = state.gamification.completions.filter(
+    completion => completion.person_id === state.me.person.id
+  );
+  if (!ownCompletions.length) {
+    completions.textContent = "Noch keine erledigten Runden.";
+    return;
+  }
+  const heading = document.createElement("strong");
+  heading.textContent = "Eigene Einträge";
+  completions.appendChild(heading);
+  for (const completion of ownCompletions) {
+    const row = document.createElement("div");
+    row.className = "completion-row";
+    row.appendChild(document.createTextNode(
+      `${fmtDate(completion.date)} · ${SLOT_LABELS[completion.slot]}`
+    ));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Rückgängig";
+    remove.onclick = () => removeCompletion(completion.date, completion.slot)
+      .catch(e => toast(e.message));
+    row.appendChild(remove);
+    completions.appendChild(row);
+  }
+}
+
+async function loadGamification() {
+  state.gamification = await api("/api/gamification");
+  renderGamification();
+  renderPlan();
+}
+
+async function toggleCompletion(date, slot, completed) {
+  if (completed) {
+    await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
+  } else {
+    await api("/api/completions", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ date, slot, source: "plan" }),
+    });
+  }
+  await loadGamification();
+}
+
+async function removeCompletion(date, slot) {
+  await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
+  await loadGamification();
 }
 
 function renderTabs() {
@@ -436,6 +560,7 @@ async function removePerson(p) {
   try {
     await api(`/api/persons/${p.id}`, { method: "DELETE" });
     await loadWeek();
+    await loadGamification();
   } catch (e) { toast(e.message); }
 }
 
@@ -446,11 +571,17 @@ document.getElementById("nextWeek").onclick = () => shiftWeek(7);
 document.getElementById("todayBtn").onclick = () => { state.year = null; state.week = null; loadWeek().catch(e => toast(e.message)); };
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) loadWeek().catch(() => {});
+  if (!document.hidden) {
+    loadWeek().catch(() => {});
+    loadGamification().catch(() => {});
+  }
 });
 // ponytail: 10-second polling; use server push only if this delay becomes too noticeable.
 setInterval(() => {
-  if (!document.hidden) loadWeek().catch(() => {});
+  if (!document.hidden) {
+    loadWeek().catch(() => {});
+    loadGamification().catch(() => {});
+  }
 }, 10_000);
 setInterval(() => {
   if (!document.hidden) refreshAdminActivity();
@@ -469,6 +600,18 @@ document.getElementById("addPersonForm").onsubmit = async (ev) => {
     });
     document.getElementById("newName").value = "";
     await loadWeek();
+    await loadGamification();
+  } catch (e) { toast(e.message); }
+};
+
+document.getElementById("walkSessionButton").onclick = async () => {
+  const active = state.gamification?.walk_status?.active;
+  try {
+    const result = await api(active ? "/api/walks/end" : "/api/walks/start", {
+      method: "POST",
+    });
+    toast(active ? "Gassi-Runde beendet" : `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`);
+    await loadGamification();
   } catch (e) { toast(e.message); }
 };
 
@@ -583,7 +726,9 @@ async function initialize() {
       return;
     }
   }
-  loadWeek().catch(e => toast(e.message));
+  loadWeek()
+    .then(() => loadGamification())
+    .catch(e => toast(e.message));
 }
 
 setAuthMode("login");

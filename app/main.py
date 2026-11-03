@@ -10,8 +10,9 @@ import os
 import secrets
 import sqlite3
 from datetime import date as dt_date
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -23,7 +24,8 @@ from itsdangerous import BadSignature, URLSafeSerializer
 
 from .auth import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .db import Database
-from .ical import build_ics
+from .gamification import COUNT_BADGE_IDS, group_progress, summarize_completions
+from .ical import SLOT_TIMES, build_ics
 from .scheduler import (
     Assignment,
     SLOT_LABELS,
@@ -35,11 +37,28 @@ from .scheduler import (
 
 STATIC_DIR = Path(__file__).parent / "static"
 BERLIN = ZoneInfo("Europe/Berlin")
+WALK_WINDOW_TOLERANCE = timedelta(minutes=30)
+
+
+def berlin_now() -> datetime:
+    return datetime.now(BERLIN)
 
 
 def current_iso_week() -> tuple[int, int]:
-    iso = datetime.now(BERLIN).date().isocalendar()
+    iso = berlin_now().date().isocalendar()
     return iso.year, iso.week
+
+
+def current_walk_window(now: datetime | None = None) -> dict | None:
+    local = (now or berlin_now()).astimezone(BERLIN)
+    for slot, ((start_hour, start_minute), (end_hour, end_minute)) in SLOT_TIMES.items():
+        start = local.replace(
+            hour=start_hour, minute=start_minute, second=0, microsecond=0
+        )
+        end = local.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+        if start - WALK_WINDOW_TOLERANCE <= local <= end + WALK_WINDOW_TOLERANCE:
+            return {"date": local.date().isoformat(), "slot": slot}
+    return None
 
 
 class PersonIn(BaseModel):
@@ -72,6 +91,13 @@ class PasswordChangeIn(BaseModel):
 
 class AdminPasswordResetIn(BaseModel):
     new_password: str = Field(min_length=12, max_length=256)
+
+
+class WalkCompletionIn(BaseModel):
+    date: dt_date
+    slot: str
+    source: Literal["plan"]
+    person_id: int | None = Field(default=None, ge=1)
 
 
 def week_dates(year: int, week: int) -> list[str]:
@@ -370,6 +396,145 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         account: dict | None = Depends(require_account),
     ):
         return build_week(year, week, account["id"] if account else None)["plan"]
+
+    def completion_person_id(
+        requested_person_id: int | None, account: dict | None
+    ) -> int:
+        if auth_enabled:
+            assert account is not None
+            if requested_person_id is not None and requested_person_id != account["id"]:
+                raise HTTPException(403, "Du kannst nur eigene Runden erfassen")
+            return account["id"]
+        if requested_person_id is None:
+            raise HTTPException(422, "person_id ist im Entwicklungsmodus erforderlich")
+        return requested_person_id
+
+    def sync_person_badges(person_id: int) -> None:
+        completions = db.list_walk_completions(person_id)
+        badge_ids = {
+            badge["id"] for badge in summarize_completions(completions)["badges"]
+        }
+        db.award_badges(person_id, list(badge_ids))
+        db.remove_badges(
+            person_id,
+            [badge_id for badge_id in COUNT_BADGE_IDS if badge_id not in badge_ids],
+        )
+
+    def stored_badges() -> dict[int, set[str]]:
+        badges: dict[int, set[str]] = {}
+        for row in db.list_person_badges():
+            badges.setdefault(row["person_id"], set()).add(row["badge_id"])
+        return badges
+
+    def assert_current_walk_window(walk_date: dt_date, slot: str) -> None:
+        window = current_walk_window()
+        if not window or window["date"] != walk_date.isoformat() or window["slot"] != slot:
+            raise HTTPException(
+                422,
+                "Gassirunden können nur im aktuellen Zeitfenster mit 30 Minuten Toleranz erfasst werden",
+            )
+
+    def assert_planned_assignment(person_id: int, walk_date: dt_date, slot: str) -> None:
+        assert_current_walk_window(walk_date, slot)
+        iso = walk_date.isocalendar()
+        plan = build_week(iso.year, iso.week, redact_preferences=False)["plan"]
+        day = next((item for item in plan["days"] if item["date"] == walk_date.isoformat()), None)
+        if not day or day["slots"].get(slot, {}).get("person_id") != person_id:
+            raise HTTPException(403, "Die Runde ist dieser Person nicht zugewiesen")
+
+    @app.get("/api/gamification")
+    def get_gamification(
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        persons = db.list_registered_persons() if auth_enabled else db.list_persons()
+        completions = db.list_walk_completions()
+        for person in persons:
+            sync_person_badges(person["id"])
+        viewer_id = account["id"] if account else person_id
+        active = db.active_walk(viewer_id) if viewer_id is not None else None
+        window = current_walk_window()
+        return {
+            "persons": group_progress(persons, completions, stored_badges()),
+            "completions": completions,
+            "walk_status": {
+                "active": active,
+                "window": window,
+                "can_start": bool(window) and active is None,
+            },
+        }
+
+    @app.post("/api/walks/start")
+    def start_walk(
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        owner_id = completion_person_id(person_id, account)
+        if not db.person_exists(owner_id):
+            raise HTTPException(404, "Teilnehmer nicht gefunden")
+        active = db.active_walk(owner_id)
+        if active:
+            return {"ok": True, "created": False, "active": active}
+        window = current_walk_window()
+        if not window:
+            raise HTTPException(
+                422,
+                "Gassi-Runden können nur im aktuellen Zeitfenster mit 30 Minuten Toleranz gestartet werden",
+            )
+        active = db.start_walk(
+            owner_id,
+            window["date"],
+            window["slot"],
+            berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+        )
+        return {"ok": True, "created": True, "active": active}
+
+    @app.post("/api/walks/end")
+    def end_walk(
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        owner_id = completion_person_id(person_id, account)
+        result = db.finish_walk(
+            owner_id,
+            berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+        )
+        if result is None:
+            raise HTTPException(404, "Keine aktive Gassi-Runde vorhanden")
+        sync_person_badges(owner_id)
+        return {"ok": True, **result}
+
+    @app.put("/api/completions")
+    def put_completion(
+        body: WalkCompletionIn,
+        account: dict | None = Depends(require_account),
+    ):
+        if body.slot not in SLOTS:
+            raise HTTPException(422, f"Ungültiger Slot: {body.slot}")
+        person_id = completion_person_id(body.person_id, account)
+        if not db.person_exists(person_id):
+            raise HTTPException(404, "Teilnehmer nicht gefunden")
+        if body.source == "plan":
+            assert_planned_assignment(person_id, body.date, body.slot)
+        created = db.add_walk_completion(
+            person_id, body.date.isoformat(), body.slot, body.source
+        )
+        sync_person_badges(person_id)
+        return {"ok": True, "created": created}
+
+    @app.delete("/api/completions/{walk_date}/{slot}")
+    def delete_completion(
+        walk_date: dt_date,
+        slot: str,
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        if slot not in SLOTS:
+            raise HTTPException(422, f"Ungültiger Slot: {slot}")
+        owner_id = completion_person_id(person_id, account)
+        if not db.remove_walk_completion(owner_id, walk_date.isoformat(), slot):
+            raise HTTPException(404, "Abschluss nicht gefunden")
+        return {"ok": True}
 
     @app.api_route("/api/calendar/{calendar_token}.ics", methods=["GET", "HEAD"])
     def person_calendar(calendar_token: str, request: Request):

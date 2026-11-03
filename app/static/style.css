@@ -106,6 +106,7 @@ tr.weekend td.day-label { color: var(--accent); }
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 .assignee .pref-dots { font-size: 0.72rem; margin-left: 0.3rem; opacity: 0.9; }
+.completion-mark { margin-left: 0.3rem; font-weight: 800; }
 
 td.unassigned {
   background: rgba(192, 57, 43, 0.18);
@@ -114,6 +115,32 @@ td.unassigned {
 }
 
 .stats { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.gamification-summary { margin-bottom: 0.75rem; }
+#walkSessionControls { margin-bottom: 0.75rem; }
+#walkSessionButton:disabled { cursor: not-allowed; opacity: 0.55; }
+.gamification-people { display: grid; gap: 0.5rem; }
+.gamification-person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0;
+}
+.gamification-person:last-child { border-bottom: none; }
+.gamification-person strong { min-width: 8rem; }
+.badge-chip {
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.82rem;
+  padding: 0.1rem 0.5rem;
+}
+.completion-list { display: grid; gap: 0.35rem; margin-top: 0.8rem; }
+.completion-row { display: flex; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.completion-row button { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+.walk-toggle { margin-top: 0; padding: 0.15rem 0.6rem; font-size: 0.92rem; }
+.walk-toggle.done { background: #27ae60; }
 .stat-chip {
   border: 1px solid var(--border);
   border-radius: 999px;

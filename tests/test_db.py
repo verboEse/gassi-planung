@@ -54,6 +54,9 @@ class TestMigration:
         tables = {r[0] for r in con.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         assert "prefs_old" not in tables
+        assert "walk_completions" in tables
+        assert "active_walks" in tables
+        assert "person_badges" in tables
         con.close()
 
     def test_migration_is_idempotent(self, tmp_path):
@@ -62,6 +65,57 @@ class TestMigration:
         Database(db_file)
         db = Database(db_file)  # zweiter Start: keine Doppel-Migration
         assert db.prefs_all()[(1, "morning", 1)] == 1
+
+
+class TestWalkCompletions:
+    def test_unique_and_remove(self, tmp_path):
+        db = Database(tmp_path / "walks.sqlite3")
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+
+        assert db.add_walk_completion(jan["id"], "2026-10-12", "morning", "plan")
+        assert not db.add_walk_completion(jan["id"], "2026-10-12", "morning", "manual")
+        assert db.add_walk_completion(jan["id"], "2026-10-12", "noon", "manual")
+        rows = db.list_walk_completions(jan["id"])
+        assert [(row["date"], row["slot"], row["source"]) for row in rows] == [
+            ("2026-10-12", "morning", "plan"),
+            ("2026-10-12", "noon", "manual"),
+        ]
+        assert all(row["created_at"] for row in rows)
+        assert db.list_walk_completions(laura["id"]) == []
+        assert db.remove_walk_completion(jan["id"], "2026-10-12", "morning")
+        assert not db.remove_walk_completion(jan["id"], "2026-10-12", "morning")
+        assert [row["slot"] for row in db.list_walk_completions(jan["id"])] == ["noon"]
+
+    def test_session_start_and_finish(self, tmp_path):
+        db = Database(tmp_path / "walks.sqlite3")
+        jan = db.add_person("Jan")
+        active = db.start_walk(jan["id"], "2026-10-12", "morning", "2026-10-12T04:30:00+00:00")
+        assert active["slot"] == "morning"
+        assert db.active_walk(jan["id"])["date"] == "2026-10-12"
+        result = db.finish_walk(jan["id"], "2026-10-12T07:00:00+00:00")
+        assert result and result["created"]
+        assert db.active_walk(jan["id"]) is None
+        assert db.list_walk_completions(jan["id"])[0]["source"] == "manual"
+        assert db.finish_walk(jan["id"], "2026-10-12T07:01:00+00:00") is None
+
+    def test_badges_can_be_removed(self, tmp_path):
+        db = Database(tmp_path / "badges.sqlite3")
+        jan = db.add_person("Jan")
+        db.award_badges(jan["id"], ["first-walk"])
+        db.award_badges(jan["id"], ["first-walk"])
+        assert db.list_person_badges(jan["id"])[0]["badge_id"] == "first-walk"
+        db.remove_badges(jan["id"], ["first-walk"])
+        assert db.list_person_badges(jan["id"]) == []
+
+    def test_delete_person_cascades(self, tmp_path):
+        db = Database(tmp_path / "walks.sqlite3")
+        jan = db.add_person("Jan")
+        db.add_walk_completion(jan["id"], "2026-10-12", "morning", "manual")
+        db.start_walk(jan["id"], "2026-10-12", "noon", "2026-10-12T12:30:00+00:00")
+        db.delete_person(jan["id"])
+        assert db.list_walk_completions() == []
+        assert db.active_walk(jan["id"]) is None
 
 
 class TestWeekdayPrefs:
