@@ -160,6 +160,10 @@ td.unassigned {
 .badge-categories { display: grid; gap: 1rem; }
 .badge-category h3 { margin: 0 0 0.5rem; font-size: 1rem; }
 .badge-items { display: flex; flex-wrap: wrap; gap: 0.65rem; }
+@media (max-width: 40rem) {
+  .badge-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr)); }
+  .badge-tile { min-width: 0; }
+}
 .badge-tile {
   display: grid;
   justify-items: center;
