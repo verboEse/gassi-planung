@@ -68,6 +68,7 @@ def build_ics(
     assignments: list[Assignment],
     recurring: bool = True,
     future_assignments: list[Assignment] | None = None,
+    reminders_enabled: bool = False,
 ) -> str:
     """Baut Kalendertermine für eine Person, optional mit separater Folgewoche."""
     lines = [
@@ -108,7 +109,15 @@ def build_ics(
             lines += [
                 f"SUMMARY:{escape_text(f'🐕 Gassi – {SLOT_LABELS[a.slot]}')}",
                 f"DESCRIPTION:{escape_text(description)}",
-                "END:VEVENT",
             ]
+            if reminders_enabled:
+                lines += [
+                    "BEGIN:VALARM",
+                    "ACTION:DISPLAY",
+                    f"DESCRIPTION:{escape_text(f'Gassi-Erinnerung – {SLOT_LABELS[a.slot]}')}",
+                    "TRIGGER:-PT15M",
+                    "END:VALARM",
+                ]
+            lines.append("END:VEVENT")
     lines.append("END:VCALENDAR")
     return "\r\n".join(fold_line(line) for line in lines) + "\r\n"

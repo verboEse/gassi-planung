@@ -72,6 +72,72 @@ function toast(msg) {
   toast._t = setTimeout(() => { el.hidden = true; }, 3500);
 }
 
+function decodeBase64Url(value) {
+  const padded = value + "=".repeat((4 - value.length % 4) % 4);
+  const binary = atob(padded.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(binary, character => character.charCodeAt(0));
+}
+
+async function enableBrowserPush() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    return "unsupported";
+  }
+  try {
+    const permission = Notification.permission === "default"
+      ? await Notification.requestPermission()
+      : Notification.permission;
+    if (permission !== "granted") return "denied";
+    const registration = await navigator.serviceWorker.register("/service-worker.js", { scope: "/" });
+    let subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      const { public_key: publicKey } = await api("/api/push/public-key");
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: decodeBase64Url(publicKey),
+      });
+    }
+    await api("/api/push/subscriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(subscription.toJSON()),
+    });
+    return "enabled";
+  } catch {
+    return "unavailable";
+  }
+}
+
+async function refreshPushSubscriptionButton() {
+  const button = document.getElementById("removePushSubscriptionButton");
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    button.hidden = true;
+    return;
+  }
+  try {
+    const registration = await navigator.serviceWorker.getRegistration("/");
+    button.hidden = !registration || !(await registration.pushManager.getSubscription());
+  } catch {
+    button.hidden = true;
+  }
+}
+
+async function removeBrowserPushSubscription() {
+  const registration = await navigator.serviceWorker.getRegistration("/");
+  const subscription = await registration?.pushManager.getSubscription();
+  if (!subscription) return false;
+  try {
+    await api("/api/push/subscriptions", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+    });
+  } catch (error) {
+    if (error.status !== 404) throw error;
+  }
+  await subscription.unsubscribe();
+  return true;
+}
+
 // ---------- Laden ------------------------------------------------------------
 
 async function loadWeek(force = false) {
@@ -292,7 +358,11 @@ function renderProfile() {
   document.getElementById("badgeVisibilitySetting").checked = profile.badge_visibility;
   document.getElementById("pushSetting").checked = profile.push_enabled;
   document.getElementById("reminderSetting").checked = profile.reminders_enabled;
+  document.getElementById("reminderDeliveryStatus").textContent = profile.reminders_enabled
+    ? "iCal-Alarme sind aktiv. Browser-Push benötigt Berechtigung auf diesem Gerät."
+    : "Erinnerungen sind deaktiviert; die allgemeine Push-Einstellung bleibt separat.";
   document.getElementById("removeAvatarButton").hidden = !profile.avatar_url;
+  refreshPushSubscriptionButton();
   renderHeaderProfile();
 }
 
@@ -921,17 +991,44 @@ document.getElementById("removeAvatarButton").onclick = async () => {
 document.getElementById("profilePreferencesForm").onsubmit = async (event) => {
   event.preventDefault();
   try {
+    const remindersEnabled = document.getElementById("reminderSetting").checked;
+    const browserPushStatus = remindersEnabled ? await enableBrowserPush() : null;
     state.profile = await api("/api/profile/preferences", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         badge_visibility: document.getElementById("badgeVisibilitySetting").checked,
         push_enabled: document.getElementById("pushSetting").checked,
-        reminders_enabled: document.getElementById("reminderSetting").checked,
+        reminders_enabled: remindersEnabled,
       }),
     });
     renderProfile();
-    toast("Profileinstellungen gespeichert");
+    if (!remindersEnabled) {
+      toast("Profileinstellungen gespeichert; Erinnerungen deaktiviert");
+    } else if (browserPushStatus === "enabled") {
+      document.getElementById("reminderDeliveryStatus").textContent =
+        "Kalenderalarm und Browser-Push sind für diesen Browser aktiv.";
+      toast("Profileinstellungen gespeichert; Browser-Push aktiviert");
+    } else {
+      const reason = browserPushStatus === "denied"
+        ? "Browser-Berechtigung fehlt"
+        : "Browser-Push ist auf diesem Gerät nicht verfügbar";
+      document.getElementById("reminderDeliveryStatus").textContent =
+        `iCal-Alarm ist aktiv; ${reason}.`;
+      toast(`Erinnerung gespeichert; ${reason}`);
+    }
+  } catch (error) { toast(error.message); }
+};
+document.getElementById("removePushSubscriptionButton").onclick = async () => {
+  try {
+    if (!await removeBrowserPushSubscription()) {
+      toast("Kein Browser-Abo vorhanden");
+      return;
+    }
+    await refreshPushSubscriptionButton();
+    document.getElementById("reminderDeliveryStatus").textContent =
+      "Browser-Abo entfernt; der iCal-Alarm folgt weiterhin der Erinnerungseinstellung.";
+    toast("Browser-Push-Abo entfernt");
   } catch (error) { toast(error.message); }
 };
 document.getElementById("badgeHistoryButton").onclick = () =>

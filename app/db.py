@@ -82,6 +82,44 @@ CREATE TABLE IF NOT EXISTS active_walks (
 )
 """
 
+PUSH_SUBSCRIPTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+    endpoint TEXT PRIMARY KEY,
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    created_at TEXT NOT NULL
+)
+"""
+
+PUSH_SUBSCRIPTIONS_PERSON_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_push_subscriptions_person
+ON push_subscriptions (person_id)
+"""
+
+REMINDER_OUTBOX_DDL = """
+CREATE TABLE IF NOT EXISTS reminder_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL CHECK (slot IN ('morning', 'noon', 'evening')),
+    due_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sending', 'sent', 'cancelled', 'expired')),
+    attempts INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    locked_until TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (person_id, walk_date, slot)
+)
+"""
+
+REMINDER_OUTBOX_DUE_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_reminder_outbox_due
+ON reminder_outbox (status, next_attempt_at)
+"""
+
 BADGE_CATEGORIES_DDL = """
 CREATE TABLE IF NOT EXISTS badge_categories (
     id TEXT PRIMARY KEY,
@@ -238,6 +276,10 @@ class Database:
             con.execute(WALK_COMPLETIONS_DDL)
             con.execute(WALK_COMPLETIONS_INDEX_DDL)
             con.execute(ACTIVE_WALKS_DDL)
+            con.execute(PUSH_SUBSCRIPTIONS_DDL)
+            con.execute(PUSH_SUBSCRIPTIONS_PERSON_INDEX_DDL)
+            con.execute(REMINDER_OUTBOX_DDL)
+            con.execute(REMINDER_OUTBOX_DUE_INDEX_DDL)
             con.execute(BADGE_CATEGORIES_DDL)
             con.execute(BADGE_DEFINITIONS_DDL)
             badge_cols = {row[1] for row in con.execute("PRAGMA table_info(badge_definitions)")}
@@ -477,6 +519,174 @@ class Database:
             )
         return cur.rowcount > 0
 
+    def save_push_subscription(
+        self, person_id: int, *, endpoint: str, p256dh: str, auth: str
+    ) -> None:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO push_subscriptions (endpoint, person_id, p256dh, auth, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(endpoint) DO UPDATE SET
+                    person_id = excluded.person_id,
+                    p256dh = excluded.p256dh,
+                    auth = excluded.auth,
+                    created_at = excluded.created_at
+                """,
+                (endpoint, person_id, p256dh, auth, created_at),
+            )
+
+    def list_push_subscriptions(self, person_id: int) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT endpoint, p256dh, auth, created_at
+                FROM push_subscriptions WHERE person_id = ? ORDER BY endpoint
+                """,
+                (person_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_push_subscription(self, person_id: int, endpoint: str) -> bool:
+        with self._connect() as con:
+            cur = con.execute(
+                "DELETE FROM push_subscriptions WHERE person_id = ? AND endpoint = ?",
+                (person_id, endpoint),
+            )
+        return cur.rowcount > 0
+
+    def reconcile_reminder_outbox(
+        self, jobs: list[tuple[int, str, str, str]], now: datetime | None = None
+    ) -> None:
+        now_iso = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        jobs_by_key = {
+            (person_id, walk_date, slot): due_at
+            for person_id, walk_date, slot, due_at in jobs
+        }
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            pending = con.execute(
+                "SELECT person_id, walk_date, slot FROM reminder_outbox WHERE status = 'pending'"
+            ).fetchall()
+            for row in pending:
+                key = (row["person_id"], row["walk_date"], row["slot"])
+                if key not in jobs_by_key:
+                    con.execute(
+                        """
+                        UPDATE reminder_outbox
+                        SET status = 'cancelled', locked_until = NULL, updated_at = ?
+                        WHERE person_id = ? AND walk_date = ? AND slot = ? AND status = 'pending'
+                        """,
+                        (now_iso, *key),
+                    )
+            for (person_id, walk_date, slot), due_at in jobs_by_key.items():
+                con.execute(
+                    """
+                    INSERT INTO reminder_outbox
+                        (person_id, walk_date, slot, due_at, status, attempts,
+                         next_attempt_at, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+                    ON CONFLICT(person_id, walk_date, slot) DO UPDATE SET
+                        due_at = excluded.due_at,
+                        status = 'pending',
+                        attempts = 0,
+                        next_attempt_at = excluded.next_attempt_at,
+                        locked_until = NULL,
+                        updated_at = excluded.updated_at
+                    WHERE reminder_outbox.status = 'cancelled'
+                       OR (reminder_outbox.status = 'pending'
+                           AND reminder_outbox.due_at != excluded.due_at)
+                    """,
+                    (person_id, walk_date, slot, due_at, due_at, now_iso, now_iso),
+                )
+
+    def reminders_enabled(self, person_id: int) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT reminders_enabled FROM persons WHERE id = ? AND active = 1",
+                (person_id,),
+            ).fetchone()
+        return bool(row[0]) if row else False
+
+    def enabled_reminder_person_ids(self) -> set[int]:
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id FROM persons WHERE active = 1 AND reminders_enabled = 1"
+            ).fetchall()
+        return {row[0] for row in rows}
+
+    def claim_due_reminders(
+        self, now: datetime, *, limit: int = 50, lease: timedelta = timedelta(minutes=2)
+    ) -> list[dict]:
+        now_utc = now.astimezone(timezone.utc)
+        now_iso = now_utc.isoformat(timespec="seconds")
+        locked_until = (now_utc + lease).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                """
+                UPDATE reminder_outbox
+                SET status = 'pending', locked_until = NULL, updated_at = ?
+                WHERE status = 'sending' AND locked_until <= ?
+                """,
+                (now_iso, now_iso),
+            )
+            rows = con.execute(
+                """
+                SELECT id, person_id, walk_date, slot, due_at, attempts
+                FROM reminder_outbox
+                WHERE status = 'pending' AND next_attempt_at <= ?
+                ORDER BY next_attempt_at, id LIMIT ?
+                """,
+                (now_iso, limit),
+            ).fetchall()
+            claimed = []
+            for row in rows:
+                cur = con.execute(
+                    """
+                    UPDATE reminder_outbox
+                    SET status = 'sending', locked_until = ?, updated_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (locked_until, now_iso, row["id"]),
+                )
+                if cur.rowcount:
+                    claimed.append(dict(row))
+        return claimed
+
+    def finish_reminder(self, reminder_id: int, status: str, now: datetime) -> bool:
+        if status not in {"sent", "cancelled", "expired"}:
+            raise ValueError("Ungültiger Reminder-Status")
+        now_iso = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                UPDATE reminder_outbox
+                SET status = ?, locked_until = NULL, updated_at = ?
+                WHERE id = ? AND status = 'sending'
+                """,
+                (status, now_iso, reminder_id),
+            )
+        return cur.rowcount > 0
+
+    def retry_reminder(self, reminder_id: int, next_attempt_at: datetime, now: datetime) -> bool:
+        now_iso = now.astimezone(timezone.utc).isoformat(timespec="seconds")
+        next_iso = next_attempt_at.astimezone(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                UPDATE reminder_outbox
+                SET status = 'pending', attempts = attempts + 1, next_attempt_at = ?,
+                    locked_until = NULL, updated_at = ?
+                WHERE id = ? AND status = 'sending'
+                """,
+                (next_iso, now_iso, reminder_id),
+            )
+        return cur.rowcount > 0
+
     def add_account(self, display_name: str, password_hash: str) -> dict:
         display_name = display_name.strip()
         if not display_name:
@@ -636,7 +846,7 @@ class Database:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT p.id, p.name, p.color, p.active
+                SELECT p.id, p.name, p.color, p.active, p.reminders_enabled
                 FROM accounts a JOIN persons p ON p.id = a.person_id
                 WHERE p.id = ? AND p.active = 1 AND p.calendar_token_version = ?
                 """,
@@ -683,7 +893,7 @@ class Database:
     def get_person(self, person_id: int) -> dict | None:
         with self._connect() as con:
             row = con.execute(
-                "SELECT id, name, color, active FROM persons WHERE id = ? AND active = 1",
+                "SELECT id, name, color, active, reminders_enabled FROM persons WHERE id = ? AND active = 1",
                 (person_id,),
             ).fetchone()
         return dict(row) if row else None

@@ -1,10 +1,10 @@
-# Spec Delta
+# Profile Hub
 
 ## Purpose
 
 Der Profilbereich bündelt persönliche Fortschritte, Avatar, Level, Aktivität und Einstellungen an einem eigenen Ort und trennt diese Inhalte vom Wochenplan.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Profile hub shows personal content
 
@@ -49,9 +49,14 @@ Das System MUST neben dem Avatar das aktuelle Level und eine stabile Level-Bezei
 
 ### Requirement: Notification preferences are separate
 
-Das System MUST Push-Mitteilungen und Erinnerungen als eigene Profileinstellungen speichern und getrennt ein- oder ausschaltbar machen. Die Einstellung DARF keine fremden Konten verändern.
+Das System MUST Push-Mitteilungen und Erinnerungen als eigene Profileinstellungen speichern und getrennt ein- oder ausschaltbar machen. Die Einstellung DARF keine fremden Konten verändern. Die Erinnerungseinstellung MUST Erinnerungen in den eigenen Kalendereinträgen aktivieren oder deaktivieren und bleibt unabhängig von der allgemeinen Push-Einstellung.
 
 #### Scenario: Reminder preference changes
 
 - **WHEN** ein Teilnehmer Erinnerungen deaktiviert
-- **THEN** wird nur seine Einstellung geändert und der neue Zustand wird beim nächsten Öffnen angezeigt
+- **THEN** wird nur seine Erinnerungseinstellung geändert, die allgemeine Push-Einstellung bleibt unverändert und der neue Zustand wird beim nächsten Öffnen angezeigt
+
+#### Scenario: Reminder preference applies to own calendar entries
+
+- **WHEN** ein Teilnehmer Erinnerungen aktiviert
+- **THEN** werden Erinnerungen für seine eigenen Kalendereinträge aktiviert, ohne die allgemeine Push-Einstellung oder fremde Konten zu verändern

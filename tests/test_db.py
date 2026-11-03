@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 from app.db import Database
 
@@ -130,6 +131,89 @@ class TestProfileSchema:
             columns = {row[1] for row in con.execute("PRAGMA table_info(badge_definitions)")}
         assert "art_key" in columns
         assert migrated.badge_definition("first-walk")["art_key"] == "seed"
+
+
+class TestPushSubscriptions:
+    def test_subscription_schema_is_added_to_existing_database(self, tmp_path):
+        path = tmp_path / "subscriptions-migration.sqlite3"
+        create_old_db(path)
+        Database(path)
+
+        con = sqlite3.connect(path)
+        tables = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        con.close()
+        assert "push_subscriptions" in tables
+
+    def test_subscriptions_are_owned_unique_and_cascade_on_person_delete(self, tmp_path):
+        db = Database(tmp_path / "subscriptions.sqlite3")
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+        first = {"endpoint": "https://push.example/1", "p256dh": "key1", "auth": "auth1"}
+        second = {"endpoint": "https://push.example/2", "p256dh": "key2", "auth": "auth2"}
+
+        db.save_push_subscription(jan["id"], **first)
+        db.save_push_subscription(jan["id"], **second)
+        assert {row["endpoint"] for row in db.list_push_subscriptions(jan["id"])} == {
+            first["endpoint"], second["endpoint"],
+        }
+
+        db.save_push_subscription(laura["id"], **first)
+        assert [row["endpoint"] for row in db.list_push_subscriptions(jan["id"])] == [
+            second["endpoint"],
+        ]
+        assert [row["endpoint"] for row in db.list_push_subscriptions(laura["id"])] == [
+            first["endpoint"],
+        ]
+        assert not db.delete_push_subscription(jan["id"], first["endpoint"])
+        assert db.delete_push_subscription(laura["id"], first["endpoint"])
+
+        db.delete_person(jan["id"])
+        assert db.list_push_subscriptions(jan["id"]) == []
+
+
+class TestReminderOutbox:
+    def test_outbox_schema_is_added_to_existing_database(self, tmp_path):
+        path = tmp_path / "reminder-outbox-migration.sqlite3"
+        create_old_db(path)
+        Database(path)
+
+        con = sqlite3.connect(path)
+        tables = {row[0] for row in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )}
+        con.close()
+        assert "reminder_outbox" in tables
+
+    def test_reconciliation_is_idempotent_and_cancels_changed_assignments(self, tmp_path):
+        db = Database(tmp_path / "reminder-outbox.sqlite3")
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+        due_at = "2026-07-10T03:45:00+00:00"
+        now = datetime(2026, 7, 1, tzinfo=timezone.utc)
+        jan_job = (jan["id"], "2026-07-10", "morning", due_at)
+        laura_job = (laura["id"], "2026-07-10", "morning", due_at)
+
+        db.reconcile_reminder_outbox([jan_job], now)
+        db.reconcile_reminder_outbox([jan_job], now)
+        with db._connect() as con:
+            rows = con.execute(
+                "SELECT person_id, status, attempts FROM reminder_outbox"
+            ).fetchall()
+        assert [(row["person_id"], row["status"], row["attempts"]) for row in rows] == [
+            (jan["id"], "pending", 0),
+        ]
+
+        db.reconcile_reminder_outbox([laura_job], now)
+        with db._connect() as con:
+            rows = con.execute(
+                "SELECT person_id, status FROM reminder_outbox ORDER BY person_id"
+            ).fetchall()
+        assert [(row["person_id"], row["status"]) for row in rows] == [
+            (jan["id"], "cancelled"),
+            (laura["id"], "pending"),
+        ]
 
 
 class TestWalkCompletions:

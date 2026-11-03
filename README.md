@@ -22,8 +22,8 @@ Wochenplan** und stellt ihn als Tabelle dar.
 - 🔐 Jeder Teilnehmer erstellt mit Gruppeneinladungscode ein eigenes Konto
   mit Passwort und pflegt nur die eigenen Prioritäten.
 - 📅 Persönlicher iCal-Abo-Link pro Teilnehmer für Apple Kalender und andere
-  Kalender-Apps. Der Kalender aktualisiert sich beim nächsten Abruf durch die
-  Kalender-App; Änderungen werden nicht als Push zugestellt.
+  Kalender-Apps. Bei aktiven Erinnerungen enthält der Feed Kalenderalarme 15 Minuten
+  vor dem Termin; Planänderungen werden nicht als Push zugestellt.
 - 🏅 Gamification: Erledigte Gassirunden geben je einen Punkt; daraus werden
   Level und Badges für die Gruppe berechnet. Die Level-Schwellen steigen
   progressiv (10, 25, 45, 70, … Punkte). Runden werden nur im jeweiligen
@@ -33,8 +33,9 @@ Wochenplan** und stellt ihn als Tabelle dar.
   Rückblick und persönlichen Anzeige-/Erinnerungseinstellungen. Saisonabzeichen
   werden bis sechs Monate im Voraus gezeigt; noch nicht erreichte Abzeichen sind
   in Graustufen mit eigens gezeichneten, jahresspezifischen SVG-Siegeln dargestellt.
-  Externe Avatar-Dienste  werden nicht kontaktiert; Push-Einstellungen speichern nur die Präferenz und
-  versenden noch keine Mitteilungen.
+  Externe Avatar-Dienste werden nicht kontaktiert. Die Erinnerungseinstellung
+  steuert iCal-Alarme und Browser-Push; allgemeine Push-Mitteilungen sind nicht Teil
+  dieses Versands.
 - 💾 Persistenz in SQLite (kein Setup nötig)
 
 ## Schnellstart
@@ -66,10 +67,28 @@ in die bestehende `traefik/traefik.yaml` unter `http:` übernommen werden. Den
 vorhandenen `tls:`-Abschnitt dabei beibehalten. Die Datei wird über den
 aktivierten File-Provider geladen.
 
-Vor dem Start `.env.example` nach `.env` kopieren und beide Werte durch
-zufällige Geheimnisse ersetzen (jeweils z. B. mit `openssl rand -hex 32`
-erzeugen). `GASSI_SESSION_SECRET` dauerhaft behalten; den Einladungscode an die
-Teilnehmer weitergeben. `.env` wird weder ins Image kopiert noch von Git erfasst.
+Vor dem Start `.env.example` nach `.env` kopieren und `GASSI_SESSION_SECRET`
+und `GASSI_INVITE_CODE` durch zufällige Geheimnisse ersetzen (z. B. mit
+`openssl rand -hex 32`). `GASSI_SESSION_SECRET` dauerhaft behalten; den
+Einladungscode an die Teilnehmer weitergeben. `.env` wird weder ins Image
+kopiert noch von Git erfasst.
+
+Für Browser-Push zusätzlich ein VAPID-Schlüsselpaar erzeugen. Im Projekt-Root:
+
+```bash
+PROJECT_DIR="$PWD"
+KEY_DIR="$HOME/.config/gassi-planung/vapid"
+mkdir -p "$KEY_DIR"
+cd "$KEY_DIR"
+"$PROJECT_DIR/.venv/bin/vapid" --gen --applicationServerKey
+base64 < private_key.pem | tr -d '\n'
+```
+
+Den ausgegebenen `Application Server Key` in `GASSI_VAPID_PUBLIC_KEY`, die
+Base64-Zeile in `GASSI_VAPID_PRIVATE_KEY_B64` und eine gültige Kontaktadresse in
+`GASSI_VAPID_SUBJECT` eintragen. Das Schlüsselpaar dauerhaft behalten und die
+private Base64-Zeile ausschließlich in `.env` beziehungsweise einem Secret
+speichern. Die App benötigt für Browser-Push HTTPS.
 Der Container startet mit einer neuen, persistenten Docker-Datenbank; die lokale
 SQLite-Datei bleibt unverändert. DNS für `gassiplan.verboese.de` muss auf den
 Docker-Host zeigen.
@@ -91,6 +110,9 @@ Für den öffentlichen Betrieb HTTPS verwenden. Diese Umgebungsvariablen setzen:
 - `GASSI_BASE_URL`: öffentliche HTTPS-Basisadresse
 - `GASSI_SESSION_SECRET`: dauerhaftes, zufälliges Geheimnis (mindestens 32 Bytes)
 - `GASSI_INVITE_CODE`: gemeinsamer, zufälliger Code für neue Teilnehmer (mindestens 32 Zeichen)
+- `GASSI_VAPID_PUBLIC_KEY`: öffentlicher, URL-sicher Base64-kodierter Push-Schlüssel
+- `GASSI_VAPID_PRIVATE_KEY_B64`: private PEM-Datei, Base64-kodiert für die Secret-Umgebung
+- `GASSI_VAPID_SUBJECT`: Kontaktadresse im VAPID-Format, z. B. `mailto:admin@example.com`
 
 Neue Konten brauchen ein Passwort mit mindestens 12 Zeichen. Passwörter werden
 mit `scrypt` gehasht gespeichert. Es gibt keinen E-Mail-Dienst und daher keine
@@ -159,7 +181,10 @@ den persönlichen Feed lesen; „Link erneuern“ widerruft den alten Link. Der
 Kalender-Knopf kopiert die URL. In Apple Kalender das Abo über
 **Ablage → Neues Kalenderabo** mit dieser URL einrichten. Apple Kalender ruft
 abonnierte Feeds selbstständig ab; der Aktualisierungszeitpunkt wird von Apple
-Kalender bestimmt.
+Kalender bestimmt. Bei aktivierten Erinnerungen enthält jeder Termin im Feed –
+auch ein wöchentlich wiederkehrender – einen `VALARM` 15 Minuten vor `DTSTART`.
+Bei deaktivierten Erinnerungen fehlt der Alarm. Kalender-Apps können Alarme in
+abonnierten Feeds ignorieren oder erst beim nächsten Feed-Abruf aktualisieren.
 
 ## Wie der Plan berechnet wird
 
@@ -201,6 +226,9 @@ pytest
 | `PUT` | `/api/prefs` | Eigene Priorität setzen: `weekday` (1=Mo…7=So), `slot`, `value` (`-1` blockiert, `1–3`, `null` löscht) |
 | `GET` | `/api/profile` | Eigenes Profil, Level, letzte Aktivität und Einstellungen anzeigen |
 | `PATCH` | `/api/profile/preferences` | Eigene Abzeichen-Sichtbarkeit und Push-/Erinnerungspräferenzen ändern |
+| `GET` | `/api/push/public-key` | Öffentlichen VAPID-Schlüssel für den eigenen Browser abrufen |
+| `POST` | `/api/push/subscriptions` | Eigenes Browser-Push-Abo registrieren |
+| `DELETE` | `/api/push/subscriptions` | Eigenes Browser-Push-Abo entfernen |
 | `PUT` | `/api/profile/avatar` | Eigenes PNG/JPEG/WebP-Profilbild hochladen (maximal 2 MiB) |
 | `GET` | `/api/profile/avatar` | Eigenes Profilbild geschützt abrufen |
 | `DELETE` | `/api/profile/avatar` | Eigenes Profilbild entfernen |
@@ -215,10 +243,23 @@ pytest
 | `GET` | `/api/calendar/{token}.ics` | Persönlicher iCal-Feed (Abo-Link ist widerrufbar) |
 | `POST` | `/api/me/calendar-token` | Persönlichen Kalender-Link erneuern |
 
-Profil- und Badge-Endpunkte benötigen eine Anmeldung und beziehen Profildaten nur
-für das eigene Konto. Avatarbilder werden lokal als PNG, JPEG oder WebP bis 2 MiB
-gespeichert; es gibt keine externen Avatar-Abrufe. Push- und Erinnerungseinstellungen
-speichern derzeit nur die Präferenz und versenden noch keine Mitteilungen.
+Profil-, Push-Abo- und Badge-Endpunkte benötigen eine Anmeldung und beziehen
+Profildaten nur für das eigene Konto. Avatarbilder werden lokal als PNG, JPEG oder
+WebP bis 2 MiB gespeichert; es gibt keine externen Avatar-Abrufe.
+
+`reminders_enabled` steuert iCal-`VALARM` und Browser-Push unabhängig von
+`push_enabled`. Browser-Push benötigt zusätzlich die Berechtigung und ein Abo des
+aktuellen Browsers; ohne Berechtigung bleibt der iCal-Alarm verfügbar. Unterstützt
+werden Push-Endpunkte von Google FCM, Mozilla und Apple. Browser-Push und Kalender-
+App können dieselbe Erinnerung anzeigen; Kalender-Clients bestimmen selbst, wann sie
+den Feed aktualisieren und ob sie `VALARM` unterstützen.
+
+Der SQLite-Outbox-Dispatcher läuft im einzelnen FastAPI-Prozess und prüft fällige
+Erinnerungen alle 30 Sekunden. Temporäre Fehler werden höchstens dreimal versucht
+(30 und 60 Sekunden Abstand); ungültige Push-Abos werden bei HTTP 404/410 entfernt.
+Jobs nach Beginn des Timeslots verfallen. Nach einem Neustart werden fällige Jobs
+nur noch vor Beginn des Timeslots versendet. Mehrere App-Instanzen werden derzeit
+nicht unterstützt.
 
 Der Badge-Katalog enthält aktuelle Zähl-Badges und historische Erfolge. Abgelaufene
 Saisonabzeichen erscheinen mit `?history=true` im Rückblick. Neue Saisonabzeichen
@@ -232,6 +273,9 @@ Abends 20–22 Uhr, Europe/Berlin) sind als Konstante `SLOT_TIMES` in
 Interaktive API-Doku: `http://localhost:8585/docs`
 
 ## Autostart (systemd User-Service)
+
+Vor dem Start `.env.example` nach `.env` kopieren und konfigurieren; der
+User-Service lädt diese Datei über `EnvironmentFile`.
 
 ```bash
 mkdir -p ~/.config/systemd/user
