@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from app.db import Database
 from app.ical import build_ics, escape_text, fold_line
 from app.main import create_app
 from app.scheduler import Assignment
@@ -63,6 +64,19 @@ class TestBuildIcs:
         assert "UNTIL" not in ics
         assert "COUNT" not in ics
         assert "wöchentlich" in ics
+
+    def test_reminder_alarm_is_optional_for_single_and_recurring_events(self):
+        assignment = make_assignment("2026-10-12", "morning")
+        assert "BEGIN:VALARM" not in build_ics(1, "Jan", [assignment])
+
+        for feed in (
+            build_ics(1, "Jan", [assignment], recurring=False, reminders_enabled=True),
+            build_ics(1, "Jan", [assignment], reminders_enabled=True),
+        ):
+            assert "BEGIN:VALARM" in feed
+            assert "ACTION:DISPLAY" in feed
+            assert "TRIGGER:-PT15M" in feed
+            assert feed.count("BEGIN:VALARM") == feed.count("BEGIN:VEVENT")
 
     def test_non_recurring_mode_uses_date_uid(self):
         ics = build_ics(7, "Jan", [make_assignment("2026-10-12", "noon")], recurring=False)
@@ -131,6 +145,25 @@ class TestCalendarEndpoint:
         assert "-1@gassi-planung" in body
         assert "-2@gassi-planung" not in body
         assert "-3@gassi-planung" not in body
+
+    def test_feed_alarms_follow_person_reminder_preference(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
+        db_path = tmp_path / "reminders.sqlite3"
+        db = Database(db_path)
+        person = db.add_person("Jan")
+        db.add_person("Laura")
+        db.add_person("Till")
+        app = create_app(str(db_path), auth_enabled=False)
+
+        with TestClient(app) as client:
+            feed = client.get(f"/api/calendar/{person['id']}.ics").text
+            assert "BEGIN:VEVENT" in feed
+            assert "BEGIN:VALARM" not in feed
+
+            db.update_profile_preferences(person["id"], reminders_enabled=True)
+            feed = client.get(f"/api/calendar/{person['id']}.ics").text
+            assert feed.count("BEGIN:VALARM") == feed.count("BEGIN:VEVENT")
+            assert "TRIGGER:-PT15M" in feed
 
     def test_unknown_person_404(self, client):
         assert client.get("/api/calendar/999.ics").status_code == 404

@@ -5,16 +5,22 @@ DB-Pfad per Umgebungsvariable GASSI_DB überschreibbar (Default: ./gassi.sqlite3
 """
 from __future__ import annotations
 
+import asyncio
+import base64
+import binascii
 import calendar
+import logging
 import hmac
 import json
 import os
 import secrets
 import sqlite3
 from datetime import date as dt_date
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -28,6 +34,7 @@ from .auth import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .db import Database
 from .gamification import badge_progress, group_progress, summarize_completions
 from .ical import SLOT_TIMES, build_ics
+from .reminders import dispatch_due_reminders, load_vapid_configuration, reminder_jobs
 from .scheduler import (
     Assignment,
     SLOT_LABELS,
@@ -42,6 +49,46 @@ BERLIN = ZoneInfo("Europe/Berlin")
 WALK_WINDOW_TOLERANCE = timedelta(minutes=30)
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_AVATAR_DIMENSION = 4096
+logger = logging.getLogger(__name__)
+PUSH_SERVICE_HOSTS = {
+    "fcm.googleapis.com",
+    "push.services.mozilla.com",
+    "updates.push.services.mozilla.com",
+    "web.push.apple.com",
+}
+
+
+def _decode_web_push_key(value: str) -> bytes | None:
+    try:
+        return base64.b64decode(
+            value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+        )
+    except (binascii.Error, ValueError):
+        return None
+
+
+def valid_push_subscription(endpoint: str, p256dh: str, auth: str) -> bool:
+    try:
+        parsed = urlsplit(endpoint)
+        port = parsed.port
+    except ValueError:
+        return False
+    public_key = _decode_web_push_key(p256dh)
+    auth_secret = _decode_web_push_key(auth)
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname in PUSH_SERVICE_HOSTS
+        and parsed.username is None
+        and parsed.password is None
+        and port in (None, 443)
+        and bool(parsed.path)
+        and not parsed.fragment
+        and public_key is not None
+        and len(public_key) == 65
+        and public_key[0] == 4
+        and auth_secret is not None
+        and len(auth_secret) == 16
+    )
 
 
 def avatar_mime_type(data: bytes) -> str | None:
@@ -160,6 +207,20 @@ class ProfilePreferencesIn(BaseModel):
     reminders_enabled: bool | None = None
 
 
+class PushSubscriptionKeysIn(BaseModel):
+    p256dh: str = Field(min_length=1, max_length=128)
+    auth: str = Field(min_length=1, max_length=64)
+
+
+class PushSubscriptionIn(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=4096)
+    keys: PushSubscriptionKeysIn
+
+
+class PushSubscriptionDeleteIn(BaseModel):
+    endpoint: str = Field(min_length=1, max_length=4096)
+
+
 class WalkCompletionIn(BaseModel):
     date: dt_date
     slot: str
@@ -191,7 +252,20 @@ def expand_prefs(
 
 def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> FastAPI:
     db = Database(db_path or os.environ.get("GASSI_DB", "gassi.sqlite3"))
-    app = FastAPI(title="Gassi-Planung")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        vapid_config = load_vapid_configuration()
+        task = asyncio.create_task(reminder_dispatcher(vapid_config)) if vapid_config else None
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+
+    app = FastAPI(title="Gassi-Planung", lifespan=lifespan)
     base_url = os.environ.get("GASSI_BASE_URL", "http://localhost:8585").rstrip("/")
     session_secret = os.environ.get("GASSI_SESSION_SECRET") or secrets.token_urlsafe(32)
     if auth_enabled and len(session_secret.encode()) < 32:
@@ -302,6 +376,41 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             if not changed:
                 raise HTTPException(404, "Profil nicht gefunden")
             return get_profile(account)
+
+        @app.get("/api/push/public-key")
+        def get_push_public_key(account: dict | None = Depends(require_account)):
+            assert account is not None
+            vapid_config = load_vapid_configuration()
+            if not vapid_config:
+                raise HTTPException(503, "Browser-Push ist nicht konfiguriert")
+            return {"public_key": vapid_config[2]}
+
+        @app.post("/api/push/subscriptions", status_code=201)
+        def register_push_subscription(
+            body: PushSubscriptionIn,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            if not valid_push_subscription(
+                body.endpoint, body.keys.p256dh, body.keys.auth
+            ):
+                raise HTTPException(422, "Ungültiges Browser-Abo")
+            db.save_push_subscription(
+                account["id"],
+                endpoint=body.endpoint,
+                p256dh=body.keys.p256dh,
+                auth=body.keys.auth,
+            )
+            return {"ok": True}
+
+        @app.delete("/api/push/subscriptions", status_code=204)
+        def delete_push_subscription(
+            body: PushSubscriptionDeleteIn,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            if not db.delete_push_subscription(account["id"], body.endpoint):
+                raise HTTPException(404, "Browser-Abo nicht gefunden")
 
         @app.put("/api/profile/avatar")
         async def upload_profile_avatar(
@@ -625,6 +734,32 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             "plan": plan_data,
         }
 
+    async def reminder_dispatcher(vapid_config):
+        vapid, subject, _ = vapid_config
+        while True:
+            try:
+                enabled_person_ids = db.enabled_reminder_person_ids()
+                plans = []
+                if enabled_person_ids:
+                    year, week = current_iso_week()
+                    next_monday = dt_date.fromisocalendar(year, week, 1) + timedelta(days=7)
+                    next_week = next_monday.isocalendar()
+                    plans = await asyncio.to_thread(
+                        lambda: [
+                            build_week(year, week, redact_preferences=False)["plan"],
+                            build_week(
+                                next_week.year, next_week.week, redact_preferences=False
+                            )["plan"],
+                        ]
+                    )
+                jobs = reminder_jobs(plans, enabled_person_ids)
+                await dispatch_due_reminders(
+                    db, jobs, enabled_person_ids, datetime.now(timezone.utc), vapid, subject
+                )
+            except Exception as error:
+                logger.warning("Reminder-Dispatcher fehlgeschlagen (%s)", type(error).__name__)
+            await asyncio.sleep(30)
+
     @app.get("/api/week")
     def get_week(
         year: int | None = Query(None),
@@ -842,6 +977,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             assignments_for(current_plan),
             recurring=False,
             future_assignments=assignments_for(future_plan),
+            reminders_enabled=bool(person["reminders_enabled"]),
         )
         if request.method == "HEAD":
             headers["Content-Length"] = str(len(ics.encode("utf-8")))
@@ -890,6 +1026,14 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         return save_preference(body, account["name"] if account else None)
 
     # --- Frontend -------------------------------------------------------------
+
+    @app.get("/service-worker.js", include_in_schema=False)
+    def service_worker():
+        return FileResponse(
+            STATIC_DIR / "service-worker.js",
+            media_type="application/javascript",
+            headers={"Service-Worker-Allowed": "/"},
+        )
 
     @app.get("/", include_in_schema=False)
     def index():

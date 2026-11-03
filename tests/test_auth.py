@@ -6,13 +6,31 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from cryptography.hazmat.primitives import serialization
 from fastapi.testclient import TestClient
+from py_vapid import Vapid
 from itsdangerous import TimestampSigner
 
 from app import main as main_module
 from app.auth import hash_password, verify_password
 from app.db import Database
 from app.main import avatar_mime_type, create_app
+
+
+def configure_test_vapid(monkeypatch):
+    vapid = Vapid()
+    vapid.generate_keys()
+    public_key = base64.urlsafe_b64encode(
+        vapid.public_key.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+    ).rstrip(b"=").decode()
+    private_key = base64.b64encode(vapid.private_pem()).decode()
+    monkeypatch.setenv("GASSI_VAPID_PUBLIC_KEY", public_key)
+    monkeypatch.setenv("GASSI_VAPID_PRIVATE_KEY_B64", private_key)
+    monkeypatch.setenv("GASSI_VAPID_SUBJECT", "mailto:admin@example.test")
+    return public_key
 
 
 def test_password_hash_uses_scrypt_and_verifies():
@@ -81,6 +99,69 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
         new_url = client.post("/api/me/calendar-token").json()["calendar_url"]
         assert client.get(urlsplit(old_url).path).status_code == 404
         assert client.get(urlsplit(new_url).path).status_code == 200
+
+
+def test_push_subscription_endpoints_are_authenticated_and_owned(tmp_path, monkeypatch):
+    secret = "test-session-secret-that-is-long-enough"
+    monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
+    monkeypatch.setenv("GASSI_BASE_URL", "https://gassiplan.example")
+    public_key = configure_test_vapid(monkeypatch)
+    db_path = tmp_path / "push-subscriptions.sqlite3"
+    db = Database(db_path)
+    owner = db.add_account("Jan", hash_password("jan family password"))
+    other = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+    payload = {
+        "endpoint": "https://fcm.googleapis.com/fcm/send/test-token",
+        "keys": {
+            "p256dh": base64.urlsafe_b64encode(b"\x04" + b"p" * 64).rstrip(b"=").decode(),
+            "auth": base64.urlsafe_b64encode(b"a" * 16).rstrip(b"=").decode(),
+        },
+    }
+
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.get("/api/push/public-key").status_code == 401
+        assert client.post("/api/push/subscriptions", json=payload).status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert client.get("/api/push/public-key").json() == {
+            "public_key": public_key,
+        }
+        assert client.post("/api/push/subscriptions", json=payload).status_code == 201
+        assert client.post("/api/push/subscriptions", json={
+            **payload, "endpoint": "https://example.com/push",
+        }).status_code == 422
+        assert client.post("/api/push/subscriptions", json={
+            **payload, "keys": {**payload["keys"], "p256dh": "invalid"},
+        }).status_code == 422
+
+        client.post("/auth/logout")
+        assert client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 200
+        assert client.request(
+            "DELETE", "/api/push/subscriptions", json={"endpoint": payload["endpoint"]}
+        ).status_code == 404
+        assert len(db.list_push_subscriptions(owner["id"])) == 1
+
+        client.post("/auth/logout")
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert client.request(
+            "DELETE", "/api/push/subscriptions", json={"endpoint": payload["endpoint"]}
+        ).status_code == 204
+        assert db.list_push_subscriptions(owner["id"]) == []
+
+
+def test_service_worker_is_root_scoped(tmp_path):
+    app = create_app(str(tmp_path / "service-worker.sqlite3"), auth_enabled=False)
+    with TestClient(app) as client:
+        response = client.get("/service-worker.js")
+    assert response.status_code == 200
+    assert response.headers["service-worker-allowed"] == "/"
+    assert 'addEventListener("push"' in response.text
 
 
 def test_gamification_requires_auth_and_own_completion(tmp_path, monkeypatch):
