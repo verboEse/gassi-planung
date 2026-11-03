@@ -24,6 +24,17 @@ Wochenplan** und stellt ihn als Tabelle dar.
 - 📅 Persönlicher iCal-Abo-Link pro Teilnehmer für Apple Kalender und andere
   Kalender-Apps. Der Kalender aktualisiert sich beim nächsten Abruf durch die
   Kalender-App; Änderungen werden nicht als Push zugestellt.
+- 🏅 Gamification: Erledigte Gassirunden geben je einen Punkt; daraus werden
+  Level und Badges für die Gruppe berechnet. Die Level-Schwellen steigen
+  progressiv (10, 25, 45, 70, … Punkte). Runden werden nur im jeweiligen
+  Zeitfenster mit 30 Minuten Toleranz gestartet; manuelle Runden laufen über
+  „Jetzt Gassi gehen“ und „Gassi-Runde beenden“.
+- 👤 Profil-Tab mit lokalem Avatar-Upload, Level, Abzeichenkatalog, saisonalem
+  Rückblick und persönlichen Anzeige-/Erinnerungseinstellungen. Saisonabzeichen
+  werden bis sechs Monate im Voraus gezeigt; noch nicht erreichte Abzeichen sind
+  in Graustufen mit eigens gezeichneten, jahresspezifischen SVG-Siegeln dargestellt.
+  Externe Avatar-Dienste  werden nicht kontaktiert; Push-Einstellungen speichern nur die Präferenz und
+  versenden noch keine Mitteilungen.
 - 💾 Persistenz in SQLite (kein Setup nötig)
 
 ## Schnellstart
@@ -188,8 +199,31 @@ pytest
 | `POST` | `/auth/login` | Mit Name und Passwort anmelden |
 | `GET` | `/api/persons` | Teilnehmer der Gruppe auflisten (angemeldet) |
 | `PUT` | `/api/prefs` | Eigene Priorität setzen: `weekday` (1=Mo…7=So), `slot`, `value` (`-1` blockiert, `1–3`, `null` löscht) |
+| `GET` | `/api/profile` | Eigenes Profil, Level, letzte Aktivität und Einstellungen anzeigen |
+| `PATCH` | `/api/profile/preferences` | Eigene Abzeichen-Sichtbarkeit und Push-/Erinnerungspräferenzen ändern |
+| `PUT` | `/api/profile/avatar` | Eigenes PNG/JPEG/WebP-Profilbild hochladen (maximal 2 MiB) |
+| `GET` | `/api/profile/avatar` | Eigenes Profilbild geschützt abrufen |
+| `DELETE` | `/api/profile/avatar` | Eigenes Profilbild entfernen |
+| `GET` | `/api/badges` | Eigene Abzeichen, Kategorien und Fortschritt anzeigen; `?history=true` für vergangene Saisonabzeichen |
+| `GET` | `/api/badges/{badge_id}` | Abzeichenbedingung, Fortschritt und opt-in Teilnehmerliste anzeigen |
+| `GET` | `/api/badges/{badge_id}/participants/{person_id}/avatar` | Profilbild eines für dieses Abzeichen sichtbaren Teilnehmers geschützt abrufen |
+| `GET` | `/api/gamification` | Gruppenfortschritt, Abschlussstatus und eigene aktive Runde anzeigen |
+| `POST` | `/api/walks/start` | Gassi-Session im aktuellen Zeitfenster starten |
+| `POST` | `/api/walks/end` | Aktive Gassi-Session beenden und Abschluss speichern |
+| `PUT` | `/api/completions` | Zugewiesene eigene Planrunde im aktuellen Zeitfenster abschließen |
+| `DELETE` | `/api/completions/{date}/{slot}` | Eigenen Abschluss entfernen |
 | `GET` | `/api/calendar/{token}.ics` | Persönlicher iCal-Feed (Abo-Link ist widerrufbar) |
 | `POST` | `/api/me/calendar-token` | Persönlichen Kalender-Link erneuern |
+
+Profil- und Badge-Endpunkte benötigen eine Anmeldung und beziehen Profildaten nur
+für das eigene Konto. Avatarbilder werden lokal als PNG, JPEG oder WebP bis 2 MiB
+gespeichert; es gibt keine externen Avatar-Abrufe. Push- und Erinnerungseinstellungen
+speichern derzeit nur die Präferenz und versenden noch keine Mitteilungen.
+
+Der Badge-Katalog enthält aktuelle Zähl-Badges und historische Erfolge. Abgelaufene
+Saisonabzeichen erscheinen mit `?history=true` im Rückblick. Neue Saisonabzeichen
+werden versioniert ergänzt, ohne Definitionen oder Freischaltungen vergangener Jahre
+zu überschreiben. Teilnehmer erscheinen in Badge-Details nur nach eigenem Opt-in.
 
 Die Slot-Zeitfenster im Kalender (Morgens 6–8 Uhr, Mittags 13:30–15:30 Uhr,
 Abends 20–22 Uhr, Europe/Berlin) sind als Konstante `SLOT_TIMES` in

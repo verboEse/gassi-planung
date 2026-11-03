@@ -56,6 +56,123 @@ CREATE TABLE IF NOT EXISTS weekly_plans (
 )
 """
 
+WALK_COMPLETIONS_DDL = """
+CREATE TABLE IF NOT EXISTS walk_completions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
+    created_at TEXT NOT NULL,
+    UNIQUE (person_id, walk_date, slot)
+)
+"""
+
+WALK_COMPLETIONS_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_walk_completions_person_date
+ON walk_completions (person_id, walk_date)
+"""
+
+ACTIVE_WALKS_DDL = """
+CREATE TABLE IF NOT EXISTS active_walks (
+    person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    started_at TEXT NOT NULL
+)
+"""
+
+BADGE_CATEGORIES_DDL = """
+CREATE TABLE IF NOT EXISTS badge_categories (
+    id TEXT PRIMARY KEY,
+    label TEXT NOT NULL,
+    sort_order INTEGER NOT NULL UNIQUE
+)
+"""
+
+BADGE_DEFINITIONS_DDL = """
+CREATE TABLE IF NOT EXISTS badge_definitions (
+    id TEXT PRIMARY KEY,
+    category_id TEXT NOT NULL REFERENCES badge_categories(id),
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    condition_type TEXT NOT NULL,
+    condition_json TEXT NOT NULL DEFAULT '{}',
+    target_value INTEGER,
+    season TEXT,
+    event_year INTEGER,
+    starts_at TEXT,
+    ends_at TEXT,
+    retention TEXT NOT NULL CHECK (retention IN ('current-count', 'historical')),
+    active INTEGER NOT NULL DEFAULT 1,
+    icon TEXT NOT NULL DEFAULT '',
+    art_key TEXT NOT NULL DEFAULT 'seal'
+)
+"""
+
+PERSON_BADGES_DDL = """
+CREATE TABLE IF NOT EXISTS person_badges (
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    badge_id TEXT NOT NULL REFERENCES badge_definitions(id) ON DELETE CASCADE,
+    awarded_at TEXT NOT NULL,
+    PRIMARY KEY (person_id, badge_id)
+)
+"""
+
+LEVEL_DEFINITIONS_DDL = """
+CREATE TABLE IF NOT EXISTS level_definitions (
+    level INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    threshold_points INTEGER NOT NULL,
+    locale TEXT NOT NULL DEFAULT 'de'
+)
+"""
+
+LEVEL_SEEDS = [
+    (1, "Gassi-Starter", 0, "de"),
+    (2, "Runden-Profi", 10, "de"),
+    (3, "Pfoten-Champion", 25, "de"),
+    (4, "Spaziergangs-Legende", 45, "de"),
+]
+
+BADGE_CATEGORIES = [
+    ("start-discovery", "Start & Entdecken", 1),
+    ("walk-milestones", "Runden-Meilensteine", 2),
+    ("streaks-habits", "Serien & Gewohnheiten", 3),
+    ("loyalty-long-term", "Treue & Langzeit", 4),
+    ("season-events", "Saison & Ereignisse", 5),
+    ("community-sharing", "Community & Teilen", 6),
+]
+
+BADGE_SEEDS = [
+    ("first-walk", "start-discovery", "Erste Runde", "Erledige deine erste Gassirunde.", "completion-count", '{"source":"any"}', 1, None, None, "current-count", "seed"),
+    ("ten-walks", "walk-milestones", "10 Runden", "Erledige zehn Gassirunden.", "completion-count", '{"source":"any"}', 10, None, None, "current-count", "bronze-medal"),
+    ("fifty-walks", "walk-milestones", "50 Runden", "Erledige fünfzig Gassirunden.", "completion-count", '{"source":"any"}', 50, None, None, "current-count", "gold-medal"),
+    ("full-week", "streaks-habits", "Volle Woche", "Erledige mindestens eine Runde an jedem Tag einer ISO-Kalenderwoche.", "full-iso-week", '{}', 7, None, None, "historical", "seven-paws"),
+]
+
+SEASONAL_EVENT_SEEDS = [
+    ("new-year-walk", "Neujahr", "Neujahrsrunde", "Starte das Jahr mit einer Gassirunde.", 1, 1, "fireworks"),
+    ("valentines-walk", "Valentinstag", "Valentinstagsrunde", "Teile am Valentinstag eine Runde mit deinem Lieblingsmenschen.", 2, 14, "heart-paws"),
+    ("spring-walk", "Frühlingsanfang", "Frühlingspfoten", "Begrüße den Frühling mit einer Gassirunde.", 3, 20, "bloom"),
+    ("earth-day-walk", "Earth Day", "Grüne Pfoten", "Feiere den Earth Day mit einem Spaziergang draußen.", 4, 22, "paw-globe"),
+    ("summer-solstice-walk", "Sommersonnenwende", "Sonnenpfoten", "Geh zur Sommersonnenwende eine Runde.", 6, 21, "sun-path"),
+    ("autumn-walk", "Herbstanfang", "Goldene Pfoten", "Entdecke den Herbst bei einer Gassirunde.", 9, 22, "leaf-trail"),
+    ("animal-day-walk", "Welttierschutztag", "Fürsorgliche Pfoten", "Geh am Welttierschutztag eine Runde.", 10, 4, "paw-shield"),
+    ("halloween-walk", "Halloween", "Mondscheinrunde", "Geh an Halloween eine Gassirunde.", 10, 31, "moon-trail"),
+    ("st-nicholas-walk", "Nikolaustag", "Nikolauspfoten", "Geh am Nikolaustag eine Gassirunde.", 12, 6, "gift-paw"),
+    ("winter-solstice-walk", "Wintersonnenwende", "Winterpfoten", "Geh zur Wintersonnenwende eine Runde.", 12, 21, "snow-paw"),
+]
+# ponytail: fünf Jahre saisonale Definitionen vorbereiten; beim jährlichen Content-Update den Horizont erweitern.
+SEASONAL_BADGE_SEEDS = [
+    (
+        f"{slug}-{year}", season, year, f"{year:04d}-{month:02d}-{day:02d}",
+        title, description, icon,
+    )
+    for year in range(2026, 2031)
+    for slug, season, title, description, month, day, icon in SEASONAL_EVENT_SEEDS
+]
+
 DEFAULT_COLORS = [
     "#4a90d9",
     "#e67e22",
@@ -83,10 +200,18 @@ class Database:
         with self._connect() as con:
             con.execute(PERSONS_DDL)
             person_cols = {r[1] for r in con.execute("PRAGMA table_info(persons)")}
-            if "calendar_token_version" not in person_cols:
-                con.execute(
-                    "ALTER TABLE persons ADD COLUMN calendar_token_version INTEGER NOT NULL DEFAULT 1"
-                )
+            person_additions = {
+                "calendar_token_version": "INTEGER NOT NULL DEFAULT 1",
+                "avatar_data": "BLOB",
+                "avatar_mime_type": "TEXT",
+                "avatar_updated_at": "TEXT",
+                "badge_visibility": "INTEGER NOT NULL DEFAULT 0",
+                "push_enabled": "INTEGER NOT NULL DEFAULT 0",
+                "reminders_enabled": "INTEGER NOT NULL DEFAULT 0",
+            }
+            for column, definition in person_additions.items():
+                if column not in person_cols:
+                    con.execute(f"ALTER TABLE persons ADD COLUMN {column} {definition}")
             account_cols = {r[1] for r in con.execute("PRAGMA table_info(accounts)")}
             if "apple_sub" in account_cols:
                 linked = con.execute(
@@ -110,6 +235,118 @@ class Database:
                     con.execute("ALTER TABLE accounts ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
             con.execute(ACTIVITY_DDL)
             con.execute(WEEKLY_PLANS_DDL)
+            con.execute(WALK_COMPLETIONS_DDL)
+            con.execute(WALK_COMPLETIONS_INDEX_DDL)
+            con.execute(ACTIVE_WALKS_DDL)
+            con.execute(BADGE_CATEGORIES_DDL)
+            con.execute(BADGE_DEFINITIONS_DDL)
+            badge_cols = {row[1] for row in con.execute("PRAGMA table_info(badge_definitions)")}
+            if "icon" not in badge_cols:
+                con.execute(
+                    "ALTER TABLE badge_definitions ADD COLUMN icon TEXT NOT NULL DEFAULT ''"
+                )
+            else:
+                con.execute("UPDATE badge_definitions SET icon = '' WHERE icon != ''")
+            if "art_key" not in badge_cols:
+                con.execute(
+                    "ALTER TABLE badge_definitions ADD COLUMN art_key TEXT NOT NULL DEFAULT 'seal'"
+                )
+            con.execute(LEVEL_DEFINITIONS_DDL)
+            level_cols = {row[1] for row in con.execute("PRAGMA table_info(level_definitions)")}
+            if "threshold_points" not in level_cols:
+                con.execute(
+                    "ALTER TABLE level_definitions ADD COLUMN threshold_points INTEGER NOT NULL DEFAULT 0"
+                )
+            con.executemany(
+                "INSERT OR IGNORE INTO badge_categories (id, label, sort_order) VALUES (?, ?, ?)",
+                BADGE_CATEGORIES,
+            )
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO badge_definitions
+                    (id, category_id, title, description, condition_type,
+                     condition_json, target_value, season, event_year, retention, art_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                BADGE_SEEDS,
+            )
+            con.executemany(
+                "UPDATE badge_definitions SET art_key = ? WHERE id = ?",
+                [(art_key, badge_id) for badge_id, _, _, _, _, _, _, _, _, _, art_key in BADGE_SEEDS],
+            )
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO badge_definitions
+                    (id, category_id, title, description, condition_type,
+                     condition_json, target_value, season, event_year, starts_at,
+                     ends_at, retention, art_key)
+                VALUES (?, 'season-events', ?, ?, 'date-completion', ?, 1, ?, ?, ?, ?, 'historical', ?)
+                """,
+                [
+                    (
+                        badge_id,
+                        f"{event_title} {year}",
+                        description,
+                        json.dumps({"date": event_date}),
+                        season,
+                        year,
+                        event_date,
+                        event_date,
+                        icon,
+                    )
+                    for badge_id, season, year, event_date, event_title, description, icon in SEASONAL_BADGE_SEEDS
+                ],
+            )
+            con.executemany(
+                "UPDATE badge_definitions SET title = ?, description = ?, art_key = ? WHERE id = ?",
+                [
+                    (f"{title} {year}", description, icon, badge_id)
+                    for badge_id, _, year, _, title, description, icon in SEASONAL_BADGE_SEEDS
+                ],
+            )
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO level_definitions (level, name, threshold_points, locale)
+                VALUES (?, ?, ?, ?)
+                """,
+                LEVEL_SEEDS,
+            )
+            if con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'person_badges'"
+            ).fetchone():
+                badge_fks = con.execute("PRAGMA foreign_key_list(person_badges)").fetchall()
+                if not any(
+                    row["table"] == "badge_definitions" and row["from"] == "badge_id"
+                    for row in badge_fks
+                ):
+                    existing_badges = con.execute(
+                        "SELECT person_id, badge_id, awarded_at FROM person_badges"
+                    ).fetchall()
+                    known_ids = {
+                        row[0] for row in con.execute("SELECT id FROM badge_definitions")
+                    }
+                    for badge_id in {row["badge_id"] for row in existing_badges} - known_ids:
+                        con.execute(
+                            """
+                            INSERT INTO badge_definitions
+                                (id, category_id, title, description, condition_type,
+                                 condition_json, retention)
+                            VALUES (?, 'start-discovery', ?, ?, 'legacy', '{}', 'historical')
+                            """,
+                            (badge_id, badge_id, "Historischer Badge-Eintrag"),
+                        )
+                    con.execute("ALTER TABLE person_badges RENAME TO person_badges_old")
+                    con.execute(PERSON_BADGES_DDL)
+                    con.executemany(
+                        """
+                        INSERT INTO person_badges (person_id, badge_id, awarded_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        [tuple(row) for row in existing_badges],
+                    )
+                    con.execute("DROP TABLE person_badges_old")
+            else:
+                con.execute(PERSON_BADGES_DDL)
             cols = {r[1] for r in con.execute("PRAGMA table_info(prefs)")}
             if cols and "date" in cols:
                 # Migration: alte datumsbasierte Tabelle (person_id, date, slot, value)
@@ -150,6 +387,95 @@ class Database:
                 """
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def profile(self, person_id: int) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT p.id, p.name, p.color, p.avatar_mime_type, p.avatar_updated_at,
+                       p.badge_visibility, p.push_enabled, p.reminders_enabled,
+                       (SELECT MAX(l.occurred_at) FROM activity_log l
+                        JOIN accounts a ON a.username = l.actor_username
+                        WHERE a.person_id = p.id) AS last_activity
+                FROM persons p JOIN accounts a ON a.person_id = p.id
+                WHERE p.id = ? AND p.active = 1
+                """,
+                (person_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        for key in ("badge_visibility", "push_enabled", "reminders_enabled"):
+            result[key] = bool(result[key])
+        avatar_mime_type = result.pop("avatar_mime_type")
+        result["avatar_url"] = (
+            f"/api/profile/avatar?v={result['avatar_updated_at']}"
+            if avatar_mime_type else None
+        )
+        result.pop("avatar_updated_at")
+        return result
+
+    def save_avatar(self, person_id: int, data: bytes, mime_type: str) -> bool:
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                UPDATE persons
+                SET avatar_data = ?, avatar_mime_type = ?, avatar_updated_at = ?
+                WHERE id = ? AND active = 1
+                """,
+                (data, mime_type, updated_at, person_id),
+            )
+        return cur.rowcount > 0
+
+    def avatar(self, person_id: int) -> tuple[bytes, str] | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT avatar_data, avatar_mime_type FROM persons
+                WHERE id = ? AND active = 1
+                """,
+                (person_id,),
+            ).fetchone()
+        if not row or row["avatar_data"] is None or row["avatar_mime_type"] is None:
+            return None
+        return bytes(row["avatar_data"]), row["avatar_mime_type"]
+
+    def remove_avatar(self, person_id: int) -> bool:
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                UPDATE persons
+                SET avatar_data = NULL, avatar_mime_type = NULL, avatar_updated_at = NULL
+                WHERE id = ? AND active = 1
+                """,
+                (person_id,),
+            )
+        return cur.rowcount > 0
+
+    def update_profile_preferences(
+        self,
+        person_id: int,
+        *,
+        badge_visibility: bool | None = None,
+        push_enabled: bool | None = None,
+        reminders_enabled: bool | None = None,
+    ) -> bool:
+        columns = {
+            "badge_visibility": badge_visibility,
+            "push_enabled": push_enabled,
+            "reminders_enabled": reminders_enabled,
+        }
+        updates = [(column, int(value)) for column, value in columns.items() if value is not None]
+        if not updates:
+            return self.person_exists(person_id)
+        assignments = ", ".join(f"{column} = ?" for column, _ in updates)
+        with self._connect() as con:
+            cur = con.execute(
+                f"UPDATE persons SET {assignments} WHERE id = ? AND active = 1",
+                (*(value for _, value in updates), person_id),
+            )
+        return cur.rowcount > 0
 
     def add_account(self, display_name: str, password_hash: str) -> dict:
         display_name = display_name.strip()
@@ -361,6 +687,220 @@ class Database:
                 (person_id,),
             ).fetchone()
         return dict(row) if row else None
+
+    def level_definition(self, level: int, locale: str = "de") -> dict:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT level, name, threshold_points, locale FROM level_definitions "
+                "WHERE level = ? AND locale = ?",
+                (level, locale),
+            ).fetchone()
+        return dict(row) if row else {
+            "level": level,
+            "name": f"Level {level}",
+            "threshold_points": None,
+            "locale": locale,
+        }
+
+    # --- Erledigte Gassirunden ----------------------------------------------
+
+    def add_walk_completion(
+        self, person_id: int, walk_date: str, slot: str, source: str
+    ) -> bool:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                INSERT OR IGNORE INTO walk_completions
+                    (person_id, walk_date, slot, source, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (person_id, walk_date, slot, source, created_at),
+            )
+        return cur.rowcount > 0
+
+    def remove_walk_completion(self, person_id: int, walk_date: str, slot: str) -> bool:
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                DELETE FROM walk_completions
+                WHERE person_id = ? AND walk_date = ? AND slot = ?
+                """,
+                (person_id, walk_date, slot),
+            )
+        return cur.rowcount > 0
+
+    def list_walk_completions(self, person_id: int | None = None) -> list[dict]:
+        query = """
+            SELECT person_id, walk_date AS date, slot, source, created_at
+            FROM walk_completions
+        """
+        params: tuple[int, ...] = ()
+        if person_id is not None:
+            query += " WHERE person_id = ?"
+            params = (person_id,)
+        query += " ORDER BY walk_date, slot, person_id"
+        with self._connect() as con:
+            rows = con.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def active_walk(self, person_id: int) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT person_id, walk_date AS date, slot, started_at
+                FROM active_walks WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def start_walk(self, person_id: int, walk_date: str, slot: str, started_at: str) -> dict:
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT OR IGNORE INTO active_walks (person_id, walk_date, slot, started_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (person_id, walk_date, slot, started_at),
+            )
+            row = con.execute(
+                """
+                SELECT person_id, walk_date AS date, slot, started_at
+                FROM active_walks WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def finish_walk(self, person_id: int, ended_at: str) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT person_id, walk_date AS date, slot
+                FROM active_walks WHERE person_id = ?
+                """,
+                (person_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            cur = con.execute(
+                """
+                INSERT OR IGNORE INTO walk_completions
+                    (person_id, walk_date, slot, source, created_at)
+                VALUES (?, ?, ?, 'manual', ?)
+                """,
+                (row["person_id"], row["date"], row["slot"], ended_at),
+            )
+            con.execute("DELETE FROM active_walks WHERE person_id = ?", (person_id,))
+        return {
+            "person_id": row["person_id"],
+            "date": row["date"],
+            "slot": row["slot"],
+            "source": "manual",
+            "created": cur.rowcount > 0,
+        }
+
+    def award_badges(self, person_id: int, badge_ids: list[str]) -> None:
+        if not badge_ids:
+            return
+        awarded_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.executemany(
+                """
+                INSERT OR IGNORE INTO person_badges (person_id, badge_id, awarded_at)
+                VALUES (?, ?, ?)
+                """,
+                [(person_id, badge_id, awarded_at) for badge_id in badge_ids],
+            )
+
+    def list_person_badges(self, person_id: int | None = None) -> list[dict]:
+        query = "SELECT person_id, badge_id, awarded_at FROM person_badges"
+        params: tuple[int, ...] = ()
+        if person_id is not None:
+            query += " WHERE person_id = ?"
+            params = (person_id,)
+        query += " ORDER BY person_id, awarded_at, badge_id"
+        with self._connect() as con:
+            rows = con.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def badge_categories(self) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, label, sort_order FROM badge_categories ORDER BY sort_order"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def badge_definitions(self) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT d.*, c.label AS category_label, c.sort_order
+                FROM badge_definitions d
+                JOIN badge_categories c ON c.id = d.category_id
+                WHERE d.active = 1
+                ORDER BY c.sort_order, d.event_year, d.title
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def badge_definition(self, badge_id: str) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT d.*, c.label AS category_label, c.sort_order
+                FROM badge_definitions d
+                JOIN badge_categories c ON c.id = d.category_id
+                WHERE d.id = ? AND d.active = 1
+                """,
+                (badge_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def badge_participants(self, badge_id: str) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT p.id, p.name, p.color, b.awarded_at,
+                       CASE WHEN p.avatar_mime_type IS NOT NULL
+                            THEN '/api/badges/' || ? || '/participants/' || p.id || '/avatar'
+                            ELSE NULL END AS avatar_url
+                FROM person_badges b
+                JOIN persons p ON p.id = b.person_id
+                WHERE b.badge_id = ? AND p.active = 1 AND p.badge_visibility = 1
+                ORDER BY b.awarded_at, p.name COLLATE NOCASE
+                """,
+                (badge_id, badge_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def badge_participant_avatar(self, badge_id: str, person_id: int) -> tuple[bytes, str] | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT p.avatar_data, p.avatar_mime_type
+                FROM person_badges b
+                JOIN persons p ON p.id = b.person_id
+                WHERE b.badge_id = ? AND p.id = ? AND p.active = 1
+                  AND p.badge_visibility = 1
+                """,
+                (badge_id, person_id),
+            ).fetchone()
+        if row is None or row["avatar_data"] is None or row["avatar_mime_type"] is None:
+            return None
+        return bytes(row["avatar_data"]), row["avatar_mime_type"]
+
+    def remove_badges(self, person_id: int, badge_ids: list[str]) -> None:
+        if not badge_ids:
+            return
+        placeholders = ", ".join("?" for _ in badge_ids)
+        with self._connect() as con:
+            con.execute(
+                f"DELETE FROM person_badges WHERE person_id = ? AND badge_id IN ({placeholders})",
+                (person_id, *badge_ids),
+            )
 
     # --- Prioritäten (allgemeingültig pro Wochentag) ------------------------
 

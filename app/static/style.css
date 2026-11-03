@@ -65,6 +65,21 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
 #weekLabel { font-weight: 600; min-width: 9.5rem; text-align: center; }
 
 #accountInfo { display: flex; align-items: center; gap: 0.6rem; }
+.avatar-button {
+  display: grid;
+  place-items: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  font-weight: 700;
+}
+.avatar-button img { width: 100%; height: 100%; object-fit: cover; }
+.level-button { background: transparent; color: var(--text); padding: 0.35rem 0.5rem; }
+.app-tabs { display: flex; gap: 0.5rem; }
+.app-tabs button { background: transparent; border: 1px solid var(--border); color: var(--text); }
+.app-tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .auth-card { max-width: 34rem; margin: 1rem auto; }
 .auth-modes { display: flex; gap: 0.5rem; margin-bottom: 0.8rem; }
 .auth-modes .active { background: var(--accent); color: #fff; }
@@ -106,6 +121,7 @@ tr.weekend td.day-label { color: var(--accent); }
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.45);
 }
 .assignee .pref-dots { font-size: 0.72rem; margin-left: 0.3rem; opacity: 0.9; }
+.completion-mark { margin-left: 0.3rem; font-weight: 800; }
 
 td.unassigned {
   background: rgba(192, 57, 43, 0.18);
@@ -114,6 +130,74 @@ td.unassigned {
 }
 
 .stats { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; }
+.gamification-summary { margin-bottom: 0.75rem; }
+#walkSessionControls { margin-bottom: 0.75rem; }
+#walkSessionButton:disabled { cursor: not-allowed; opacity: 0.55; }
+.gamification-people { display: grid; gap: 0.5rem; }
+.gamification-person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  padding: 0.4rem 0;
+}
+.gamification-person:last-child { border-bottom: none; }
+.gamification-person strong { min-width: 8rem; }
+.badge-chip {
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 0.82rem;
+  padding: 0.1rem 0.5rem;
+}
+.completion-list { display: grid; gap: 0.35rem; margin-top: 0.8rem; }
+.completion-row { display: flex; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.profile-card { display: grid; gap: 0.75rem; }
+.profile-card label { display: flex; align-items: center; gap: 0.5rem; }
+.badge-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+#badgeProgressBar, #badgeDetailProgress { display: block; width: 100%; height: 0.8rem; accent-color: var(--accent); margin: 0.5rem 0 1rem; }
+.badge-categories { display: grid; gap: 1rem; }
+.badge-category h3 { margin: 0 0 0.5rem; font-size: 1rem; }
+.badge-items { display: flex; flex-wrap: wrap; gap: 0.65rem; }
+.badge-tile {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 0.3rem;
+  min-width: 7.5rem;
+  min-height: 7.5rem;
+  padding: 0.7rem;
+  background: #222b34;
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+.badge-tile.earned { border-color: #27ae60; background: rgba(39, 174, 96, 0.12); }
+.badge-tile.locked, .badge-detail-icon.locked { filter: grayscale(1); opacity: 0.58; }
+.badge-art { display: block; width: 4.5rem; height: 4.5rem; }
+.badge-art svg { display: block; width: 100%; height: 100%; }
+.badge-detail-icon { width: 7rem; height: 7rem; margin: 0.75rem 0; }
+.badge-detail-icon svg { display: block; width: 100%; height: 100%; }
+.badge-title { font-weight: 650; }
+.badge-tile-progress, .badge-tile-earned { color: var(--muted); font-size: 0.82rem; }
+.badge-tile-earned { color: #6fda9b; font-size: 1rem; font-weight: 800; }
+.badge-participant { display: inline-flex; flex-direction: column; align-items: center; gap: 0.35rem; padding: 0.5rem; }
+.badge-participant-avatar {
+  display: grid;
+  place-items: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  border-radius: 50%;
+  color: #fff;
+  font-weight: 700;
+  overflow: hidden;
+}
+.badge-participant-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.profile-social { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.profile-social h2 { width: 100%; }
+.completion-row button { padding: 0.2rem 0.5rem; font-size: 0.8rem; }
+.walk-toggle { margin-top: 0; padding: 0.15rem 0.6rem; font-size: 0.92rem; }
+.walk-toggle.done { background: #27ae60; }
 .stat-chip {
   border: 1px solid var(--border);
   border-radius: 999px;

@@ -1,6 +1,9 @@
 """API-Tests mit FastAPI TestClient gegen eine temporäre SQLite-DB."""
 from __future__ import annotations
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -25,6 +28,17 @@ def add_person(client, name, color=None):
     return res.json()
 
 
+def test_profile_and_badge_endpoints_are_in_openapi(tmp_path):
+    schema = create_app(str(tmp_path / "openapi.sqlite3")).openapi()
+    paths = schema["paths"]
+    assert {"get"} <= paths["/api/profile"].keys()
+    assert {"get"} <= paths["/api/badges"].keys()
+    assert {"get"} <= paths["/api/badges/{badge_id}"].keys()
+    assert {"get"} <= paths["/api/badges/{badge_id}/participants/{person_id}/avatar"].keys()
+    assert {"put", "get", "delete"} <= paths["/api/profile/avatar"].keys()
+    assert {"patch"} <= paths["/api/profile/preferences"].keys()
+
+
 class TestPersons:
     def test_create_and_list(self, client):
         p = add_person(client, "Jan")
@@ -47,6 +61,146 @@ class TestPersons:
         assert client.delete(f"/api/persons/{p['id']}").status_code == 204
         assert client.get("/api/persons").json()["persons"] == []
         assert client.delete(f"/api/persons/{p['id']}").status_code == 404
+
+
+class TestGamification:
+    def test_planned_duplicate_and_remove(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        person = add_person(client, "Jan")
+        payload = {
+            "person_id": person["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+            "source": "plan",
+        }
+        first = client.put("/api/completions", json=payload)
+        assert first.status_code == 200 and first.json()["created"]
+        assert not client.put("/api/completions", json=payload).json()["created"]
+
+        progress = client.get("/api/gamification")
+        assert progress.status_code == 200
+        jan = progress.json()["persons"][0]
+        assert jan["points"] == 1
+        assert jan["level"] == 1
+        assert jan["level_name"] == "Gassi-Starter"
+        assert {badge["id"] for badge in jan["badges"]} == {"first-walk"}
+
+        removed = client.delete(
+            f"/api/completions/{payload['date']}/{payload['slot']}?person_id={person['id']}"
+        )
+        assert removed.status_code == 200
+        assert client.get("/api/gamification").json()["persons"][0]["points"] == 0
+
+    def test_count_badge_is_removed_after_completion_correction(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        person = add_person(client, "Jan")
+        payload = {
+            "person_id": person["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+            "source": "plan",
+        }
+        assert client.put("/api/completions", json=payload).status_code == 200
+        badges = client.get("/api/gamification").json()["persons"][0]["badges"]
+        assert {badge["id"] for badge in badges} == {"first-walk"}
+        assert client.delete(
+            f"/api/completions/2026-01-01/morning?person_id={person['id']}"
+        ).status_code == 200
+        badges = client.get("/api/gamification").json()["persons"][0]["badges"]
+        assert badges == []
+
+    def test_full_week_badge_remains_after_correction(self, client, monkeypatch):
+        person = add_person(client, "Jan")
+        for day in range(5, 12):
+            monkeypatch.setattr(
+                main_module,
+                "berlin_now",
+                lambda day=day: datetime(
+                    2026, 1, day, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")
+                ),
+            )
+            assert client.post(f"/api/walks/start?person_id={person['id']}").status_code == 200
+            monkeypatch.setattr(
+                main_module,
+                "berlin_now",
+                lambda day=day: datetime(
+                    2026, 1, day, 7, 0, tzinfo=ZoneInfo("Europe/Berlin")
+                ),
+            )
+            assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 200
+        badges = client.get("/api/gamification").json()["persons"][0]["badges"]
+        assert "full-week" in {badge["id"] for badge in badges}
+        assert client.delete(
+            f"/api/completions/2026-01-11/morning?person_id={person['id']}"
+        ).status_code == 200
+        badges = client.get("/api/gamification").json()["persons"][0]["badges"]
+        assert "full-week" in {badge["id"] for badge in badges}
+
+    def test_walk_session_start_end_and_reload(self, client, monkeypatch):
+        person = add_person(client, "Jan")
+        set_time = lambda hour, minute: monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, hour, minute, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        set_time(5, 29)
+        assert client.post(f"/api/walks/start?person_id={person['id']}").status_code == 422
+        set_time(5, 30)
+        started = client.post(f"/api/walks/start?person_id={person['id']}")
+        assert started.status_code == 200
+        assert started.json()["active"]["slot"] == "morning"
+        assert client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()["walk_status"]["active"]
+        set_time(9, 0)
+        ended = client.post(f"/api/walks/end?person_id={person['id']}")
+        assert ended.status_code == 200 and ended.json()["created"]
+        assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 404
+        assert client.get("/api/gamification").json()["persons"][0]["points"] == 1
+
+    def test_invalid_completion_rejected(self, client, monkeypatch):
+        person = add_person(client, "Jan")
+        base = {"person_id": person["id"], "date": "2026-01-01", "source": "plan"}
+        assert client.put("/api/completions", json={**base, "slot": "nachts"}).status_code == 422
+        assert client.put(
+            "/api/completions", json={**base, "slot": "morning", "source": "manual"}
+        ).status_code == 422
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 10, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        assert client.put(
+            "/api/completions", json={**base, "slot": "morning"}
+        ).status_code == 422
+
+    def test_planned_completion_requires_assignment(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        plan = client.get("/api/plan?year=2026&week=1").json()
+        assigned = next(day for day in plan["days"] if day["date"] == "2026-01-01")
+        assigned_id = assigned["slots"]["morning"]["person_id"]
+        wrong_person = laura if assigned_id == jan["id"] else jan
+        response = client.put("/api/completions", json={
+            "person_id": wrong_person["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+            "source": "plan",
+        })
+        assert response.status_code == 403
 
 
 class TestPrefs:

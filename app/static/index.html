@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=8">
 </head>
 <body>
   <header>
@@ -16,6 +16,11 @@
       <button id="todayBtn" class="secondary">Heute</button>
     </nav>
     <div id="accountInfo" hidden>
+      <button id="avatarButton" class="avatar-button" type="button" title="Profilbild ändern">
+        <img id="headerAvatar" alt="Profilbild" hidden>
+        <span id="headerAvatarFallback" aria-hidden="true"></span>
+      </button>
+      <button id="headerLevelButton" class="level-button" type="button"></button>
       <span id="accountName"></span>
       <button id="logoutBtn" class="secondary">Abmelden</button>
     </div>
@@ -46,70 +51,126 @@
   </main>
 
   <main id="appContent" hidden>
-    <details class="card" id="planSection" open>
-      <summary>Plan</summary>
-      <div id="planTable" class="table-wrap"></div>
-      <div id="planStats" class="stats"></div>
-    </details>
+    <nav class="app-tabs" aria-label="Hauptnavigation">
+      <button id="planTabButton" type="button">Plan</button>
+      <button id="profileTabButton" type="button">Profil</button>
+    </nav>
 
-    <details class="card" id="editSection">
-      <summary>Prioritäten</summary>
-      <div id="personTabs" class="tabs"></div>
-      <div id="calLink" class="cal-link"></div>
-      <p class="hint">
-        <strong>3</strong> = gehe ich gern · <strong>2</strong> = ok ·
-        <strong>1</strong> = nur wenn nötig · <strong>🚫</strong> = nicht zu Hause ·
-        <strong>–</strong> = neutral (wie 2) · Änderungen gelten <strong>ab nächster Woche</strong>; aktueller Plan bleibt bis Sonntag fest
-      </p>
-      <div id="editGrid" class="table-wrap"></div>
-    </details>
+    <div id="planView">
+      <details class="card" id="planSection" open>
+        <summary>Plan</summary>
+        <div id="planTable" class="table-wrap"></div>
+        <div id="planStats" class="stats"></div>
+      </details>
 
-    <details class="card" id="passwordSection">
-      <summary>Passwort ändern</summary>
-      <form id="passwordForm" class="account-form">
-        <label>Aktuelles Passwort
-          <input id="currentPassword" type="password" autocomplete="current-password" required>
+      <details class="card" id="editSection">
+        <summary>Prioritäten</summary>
+        <div id="personTabs" class="tabs"></div>
+        <div id="calLink" class="cal-link"></div>
+        <p class="hint">
+          <strong>3</strong> = gehe ich gern · <strong>2</strong> = ok ·
+          <strong>1</strong> = nur wenn nötig · <strong>🚫</strong> = nicht zu Hause ·
+          <strong>–</strong> = neutral (wie 2) · Änderungen gelten <strong>ab nächster Woche</strong>; aktueller Plan bleibt bis Sonntag fest
+        </p>
+        <div id="editGrid" class="table-wrap"></div>
+      </details>
+
+      <details class="card" id="personsSection">
+        <summary>Personen</summary>
+        <div id="personList" class="person-list"></div>
+        <form id="addPersonForm">
+          <input id="newName" type="text" placeholder="Name" maxlength="50" required>
+          <input id="newColor" type="color" value="#4a90d9" title="Farbe">
+          <button type="submit">+ Hinzufügen</button>
+        </form>
+      </details>
+
+      <details class="card" id="adminSection" hidden>
+        <summary>Administration</summary>
+        <label>Teilnehmer
+          <select id="adminUserSelect"></select>
         </label>
-        <label>Neues Passwort (mindestens 12 Zeichen)
-          <input id="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
-        </label>
-        <button type="submit">Passwort speichern</button>
-      </form>
-    </details>
+        <h3>Präferenzen des Teilnehmers</h3>
+        <p class="hint">Änderungen gelten ab nächster Woche; der aktuelle Wochenplan bleibt unverändert.</p>
+        <div id="adminPrefsGrid" class="table-wrap"></div>
+        <form id="adminPasswordForm" class="account-form">
+          <label>Neues Passwort für den ausgewählten Teilnehmer (mindestens 12 Zeichen)
+            <input id="adminNewPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+          </label>
+          <button type="submit">Passwort zurücksetzen</button>
+        </form>
+        <div class="admin-activity-heading">
+          <h3>Aktivität (letzte 90 Tage)</h3>
+          <button id="refreshActivity" class="secondary" type="button">Aktualisieren</button>
+        </div>
+        <div id="adminActivity" class="table-wrap"></div>
+      </details>
+    </div>
 
-    <details class="card" id="personsSection">
-      <summary>Personen</summary>
-      <div id="personList" class="person-list"></div>
-      <form id="addPersonForm">
-        <input id="newName" type="text" placeholder="Name" maxlength="50" required>
-        <input id="newColor" type="color" value="#4a90d9" title="Farbe">
-        <button type="submit">+ Hinzufügen</button>
-      </form>
-    </details>
+    <div id="profileView" hidden>
+      <section class="card profile-card" id="profileSection">
+        <h2>Mein Profil</h2>
+        <p id="profileLastActivity" class="hint"></p>
+        <input id="avatarUpload" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+        <button id="removeAvatarButton" class="secondary" type="button" hidden>Profilbild entfernen</button>
+        <form id="profilePreferencesForm" class="account-form">
+          <label><input id="badgeVisibilitySetting" type="checkbox"> Meine Abzeichen in Teilnehmerlisten zeigen</label>
+          <label><input id="pushSetting" type="checkbox"> Push-Mitteilungen aktivieren</label>
+          <label><input id="reminderSetting" type="checkbox"> Erinnerungen aktivieren</label>
+          <button type="submit">Einstellungen speichern</button>
+        </form>
+      </section>
 
-    <details class="card" id="adminSection" hidden>
-      <summary>Administration</summary>
-      <label>Teilnehmer
-        <select id="adminUserSelect"></select>
-      </label>
-      <h3>Präferenzen des Teilnehmers</h3>
-      <p class="hint">Änderungen gelten ab nächster Woche; der aktuelle Wochenplan bleibt unverändert.</p>
-      <div id="adminPrefsGrid" class="table-wrap"></div>
-      <form id="adminPasswordForm" class="account-form">
-        <label>Neues Passwort für den ausgewählten Teilnehmer (mindestens 12 Zeichen)
-          <input id="adminNewPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
-        </label>
-        <button type="submit">Passwort zurücksetzen</button>
-      </form>
-      <div class="admin-activity-heading">
-        <h3>Aktivität (letzte 90 Tage)</h3>
-        <button id="refreshActivity" class="secondary" type="button">Aktualisieren</button>
-      </div>
-      <div id="adminActivity" class="table-wrap"></div>
-    </details>
+      <section class="card badge-overview" id="badgeOverview">
+        <div class="badge-heading">
+          <h2>Meine Abzeichen</h2>
+          <button id="badgeHistoryButton" class="secondary" type="button">Dein Rückblick</button>
+        </div>
+        <div id="badgeProgressText"></div>
+        <progress id="badgeProgressBar" max="1" value="0" aria-label="Abzeichenfortschritt"></progress>
+        <div id="badgeCategories" class="badge-categories"></div>
+      </section>
+
+      <section class="card badge-detail" id="badgeDetail" hidden>
+        <button id="badgeBackButton" class="secondary" type="button">Zurück zu Abzeichen</button>
+        <div id="badgeDetailIcon" class="badge-detail-icon" aria-hidden="true"></div>
+        <h2 id="badgeDetailTitle"></h2>
+        <p id="badgeDetailCategory" class="hint"></p>
+        <p id="badgeDetailDescription"></p>
+        <p id="badgeDetailCondition"></p>
+        <progress id="badgeDetailProgress" max="1" value="0"></progress>
+        <p id="badgeDetailProgressText"></p>
+        <div id="badgeParticipants"></div>
+      </section>
+
+      <details class="card" id="gamificationSection">
+        <summary>Gassirunden</summary>
+        <div id="gamificationSummary" class="gamification-summary"></div>
+        <div id="walkSessionControls">
+          <p id="walkSessionHint" class="hint"></p>
+          <button id="walkSessionButton" type="button" hidden>Jetzt Gassi gehen</button>
+        </div>
+        <div id="gamificationPeople" class="gamification-people"></div>
+        <div id="myCompletions" class="completion-list"></div>
+      </details>
+
+
+      <details class="card" id="passwordSection">
+        <summary>Passwort ändern</summary>
+        <form id="passwordForm" class="account-form">
+          <label>Aktuelles Passwort
+            <input id="currentPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <label>Neues Passwort (mindestens 12 Zeichen)
+            <input id="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+          </label>
+          <button type="submit">Passwort speichern</button>
+        </form>
+      </details>
+    </div>
   </main>
 
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=8"></script>
 </body>
 </html>
