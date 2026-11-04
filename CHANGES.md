@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The current app version is maintained in `app/__init__.py`.
 
+## [0.2.0] - 2026-11-04
+
+### Added
+
+- Feedback-Link in der App zum direkten Einreichen von Verbesserungsvorschlägen auf GitHub.
+- Getrennte Ansichten für Profil/Einstellungen und Abzeichen/Fortschritt; Avatar führt zum Profil, Level zu Abzeichen und Gassirunden.
+- Profilbild kann im Profil geändert werden.
+
+### Changed
+
+- Plan ist die Standardansicht; die App-Tabs wurden entfernt.
+- Ungelesene Neuigkeiten werden direkt nach Wiederherstellung der Sitzung geladen, auch nach einem Seiten-Reload.
+- Admin-Konten können Neuigkeiten ebenfalls abrufen und als gelesen markieren; der Lesestatus bleibt pro Konto gespeichert.
+
 ## [0.1.0]
 
 ### Added

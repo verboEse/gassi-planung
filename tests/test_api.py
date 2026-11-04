@@ -668,3 +668,28 @@ class TestWeekAndPlan:
         assert "Gassi" in res.text
         assert "https://github.com/verboEse/gassi-planung/issues/new" in res.text
         assert "Verbesserung vorschlagen" in res.text
+        assert 'class="app-tabs"' not in res.text
+        assert 'id="planView"' in res.text
+        assert 'id="profileView" hidden' in res.text
+        assert 'id="badgesView" hidden' in res.text
+        assert 'id="planHomeButton"' in res.text
+        assert 'id="changeAvatarButton"' in res.text
+
+    def test_news_bootstrap_is_not_blocked_by_page_loads(self, client):
+        script = client.get("/static/app.js").text
+        initialize = script.split("async function initialize() {", 1)[1].split(
+            "\n}\n\nsetAuthMode(", 1
+        )[0]
+        session_restore = initialize.index('state.me = await api("/api/me");')
+        news_load = initialize.index("loadNews();")
+        plan_load = initialize.index("loadWeek()")
+        assert session_restore < news_load < plan_load
+        assert "if (state.me) loadNews();" in initialize
+
+    def test_news_loader_does_not_skip_admin_accounts(self, client):
+        script = client.get("/static/app.js").text
+        news_loader = script.split("async function loadNews() {", 1)[1].split(
+            "\n}\n\nasync function initialize()", 1
+        )[0]
+        assert "if (!state.me) return;" in news_loader
+        assert "state.me.person.is_admin" not in news_loader

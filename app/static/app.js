@@ -819,16 +819,18 @@ function navigateApp(route) {
 function applyAppRoute() {
   const route = decodeURIComponent(location.hash.slice(1));
   state.walkTarget = parseWalkTarget(route);
-  const isProfile = route === "profile" || route === "history" || route.startsWith("badge/");
-  document.getElementById("planView").hidden = isProfile;
+  const isProfile = route === "profile";
+  const isBadges = route === "badges" || route === "history" || route.startsWith("badge/");
+  const isPlan = !isProfile && !isBadges;
+  document.getElementById("planView").hidden = !isPlan;
   document.getElementById("profileView").hidden = !isProfile;
-  document.getElementById("planTabButton").classList.toggle("active", !isProfile);
-  document.getElementById("profileTabButton").classList.toggle("active", isProfile);
+  document.getElementById("badgesView").hidden = !isBadges;
+  document.getElementById("planHomeButton").hidden = isPlan;
   const detailId = route.startsWith("badge/") ? route.slice("badge/".length) : null;
   document.getElementById("badgeOverview").hidden = Boolean(detailId);
   document.getElementById("badgeDetail").hidden = !detailId;
   if (isProfile && state.me && !state.profile) loadProfile().catch(error => toast(error.message));
-  if (isProfile && state.me && (!state.badgeCatalog || state.badgeHistory !== (route === "history"))) {
+  if (isBadges && state.me && (!state.badgeCatalog || state.badgeHistory !== (route === "history"))) {
     loadBadgeCatalog(route === "history").catch(error => toast(error.message));
   }
   if (detailId && state.me && state.badgeDetail?.id !== detailId) {
@@ -1241,13 +1243,13 @@ async function removePerson(p) {
 
 // ---------- Init ---------------------------------------------------------------
 
-document.getElementById("planTabButton").onclick = () => navigateApp("plan");
-document.getElementById("profileTabButton").onclick = () => navigateApp("profile");
-document.getElementById("headerLevelButton").onclick = () => navigateApp("profile");
+document.getElementById("planHomeButton").onclick = () => navigateApp("plan");
+document.getElementById("headerLevelButton").onclick = () => navigateApp("badges");
 window.addEventListener("hashchange", applyAppRoute);
 document.getElementById("avatarButton").onclick = () => {
-  if (state.me) document.getElementById("avatarUpload").click();
+  if (state.me) navigateApp("profile");
 };
+document.getElementById("changeAvatarButton").onclick = () => document.getElementById("avatarUpload").click();
 document.getElementById("avatarUpload").onchange = async (event) => {
   const file = event.target.files[0];
   if (!file) return;
@@ -1321,9 +1323,9 @@ document.getElementById("removePushSubscriptionButton").onclick = async () => {
   } catch (error) { toast(error.message); }
 };
 document.getElementById("badgeHistoryButton").onclick = () =>
-  navigateApp(state.badgeHistory ? "profile" : "history");
+  navigateApp(state.badgeHistory ? "badges" : "history");
 document.getElementById("badgeBackButton").onclick = () =>
-  navigateApp(state.badgeHistory ? "history" : "profile");
+  navigateApp(state.badgeHistory ? "history" : "badges");
 
 document.getElementById("prevWeek").onclick = () => shiftWeek(-7);
 document.getElementById("nextWeek").onclick = () => shiftWeek(7);
@@ -1494,7 +1496,7 @@ document.getElementById("newsLaterButton").onclick = () => {
 };
 
 async function loadNews() {
-  if (!state.me || state.me.person.is_admin) return;
+  if (!state.me) return;
   try {
     const { news } = await api("/api/news");
     if (!news.length) return;
@@ -1564,12 +1566,12 @@ async function initialize() {
       return;
     }
   }
+  if (state.me) loadNews();
   loadWeek()
     .then(async () => {
       await loadGamification();
       if (state.me) {
         await loadProfile();
-        await loadNews();
       }
       applyAppRoute();
     })
