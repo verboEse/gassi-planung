@@ -34,7 +34,12 @@ from .auth import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .db import Database
 from .gamification import badge_progress, group_progress, summarize_completions
 from .ical import SLOT_TIMES, build_ics
-from .reminders import dispatch_due_reminders, load_vapid_configuration, reminder_jobs
+from .reminders import (
+    dispatch_due_reminders,
+    load_vapid_configuration,
+    reminder_jobs,
+    send_event_push,
+)
 from .scheduler import (
     Assignment,
     SLOT_LABELS,
@@ -225,6 +230,18 @@ class WalkCompletionIn(BaseModel):
     date: dt_date
     slot: str
     source: Literal["plan"]
+    person_id: int | None = Field(default=None, ge=1)
+    co_walker_ids: list[int] = Field(default_factory=list)
+
+
+class WalkTakeoverRequestIn(BaseModel):
+    date: dt_date
+    slot: str
+    person_id: int | None = Field(default=None, ge=1)
+
+
+class WalkTakeoverDecisionIn(BaseModel):
+    approved: bool
     person_id: int | None = Field(default=None, ge=1)
 
 
@@ -824,13 +841,111 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 "Gassirunden können nur im aktuellen Zeitfenster mit 30 Minuten Toleranz erfasst werden",
             )
 
-    def assert_planned_assignment(person_id: int, walk_date: dt_date, slot: str) -> None:
-        assert_current_walk_window(walk_date, slot)
+    def planned_assignment_person_id(walk_date: dt_date, slot: str) -> int:
         iso = walk_date.isocalendar()
         plan = build_week(iso.year, iso.week, redact_preferences=False)["plan"]
         day = next((item for item in plan["days"] if item["date"] == walk_date.isoformat()), None)
-        if not day or day["slots"].get(slot, {}).get("person_id") != person_id:
+        assignee_id = day["slots"].get(slot, {}).get("person_id") if day else None
+        if assignee_id is None:
+            raise HTTPException(422, "Für diese Runde ist keine Person eingetragen")
+        return assignee_id
+
+    def assert_original_assignee(person_id: int, walk_date: dt_date, slot: str) -> None:
+        assert_current_walk_window(walk_date, slot)
+        if planned_assignment_person_id(walk_date, slot) != person_id:
             raise HTTPException(403, "Die Runde ist dieser Person nicht zugewiesen")
+
+    def assert_can_complete_planned_walk(
+        person_id: int, walk_date: dt_date, slot: str
+    ) -> None:
+        assert_current_walk_window(walk_date, slot)
+        assignee_id = planned_assignment_person_id(walk_date, slot)
+        takeover = db.approved_walk_takeover_for_slot(walk_date.isoformat(), slot)
+        if assignee_id == person_id:
+            if takeover:
+                raise HTTPException(403, "Die Runde wurde zur Übernahme freigegeben")
+        elif not takeover or takeover["requester_id"] != person_id:
+            raise HTTPException(403, "Die Runde ist dieser Person nicht zugewiesen")
+
+    @app.get("/api/walk-takeovers")
+    def get_walk_takeovers(
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        owner_id = completion_person_id(person_id, account)
+        return {"requests": db.list_walk_takeover_requests(owner_id)}
+
+    @app.post("/api/walk-takeovers", status_code=201)
+    def request_walk_takeover(
+        body: WalkTakeoverRequestIn,
+        account: dict | None = Depends(require_account),
+    ):
+        if body.slot not in SLOTS:
+            raise HTTPException(422, f"Ungültiger Slot: {body.slot}")
+        requester_id = completion_person_id(body.person_id, account)
+        if db.get_person(requester_id) is None:
+            raise HTTPException(404, "Teilnehmer nicht gefunden")
+        assert_current_walk_window(body.date, body.slot)
+        assignee_id = planned_assignment_person_id(body.date, body.slot)
+        if db.walk_completion_exists(body.date.isoformat(), body.slot):
+            raise HTTPException(409, "Diese Runde wurde bereits abgeschlossen")
+        if requester_id == assignee_id:
+            raise HTTPException(409, "Diese Runde ist dir bereits zugewiesen")
+        try:
+            request = db.create_walk_takeover_request(
+                body.date.isoformat(),
+                body.slot,
+                requester_id,
+                assignee_id,
+                berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "Für diese Runde gibt es bereits eine aktive Übernahme")
+        requester = db.get_person(requester_id)
+        send_event_push(
+            db,
+            assignee_id,
+            {
+                "title": "Gassi-Runde übernehmen?",
+                "body": f"{requester['name']} möchte die Runde {SLOT_LABELS[body.slot]} am {body.date:%d.%m.%Y} übernehmen.",
+                "tag": f"gassi-takeover-{request['id']}",
+                "url": "/",
+            },
+            load_vapid_configuration(),
+        )
+        return {"ok": True, "request": request}
+
+    @app.put("/api/walk-takeovers/{request_id}")
+    def decide_walk_takeover(
+        request_id: int,
+        body: WalkTakeoverDecisionIn,
+        account: dict | None = Depends(require_account),
+    ):
+        assignee_id = completion_person_id(body.person_id, account)
+        request = db.decide_walk_takeover_request(
+            request_id,
+            assignee_id,
+            body.approved,
+            berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+        )
+        if request is None:
+            raise HTTPException(404, "Übernahmeanfrage nicht gefunden oder bereits entschieden")
+        approved = request["status"] == "approved"
+        send_event_push(
+            db,
+            request["requester_id"],
+            {
+                "title": "Gassi-Runde freigegeben" if approved else "Gassi-Runde bleibt eingeplant",
+                "body": (
+                    f"Die Runde {SLOT_LABELS[request['slot']]} am {request['walk_date']} "
+                    + ("wurde für dich freigegeben." if approved else "wird von der eingetragenen Person wahrgenommen.")
+                ),
+                "tag": f"gassi-takeover-{request['id']}",
+                "url": "/",
+            },
+            load_vapid_configuration(),
+        )
+        return {"ok": True, "request": request}
 
     @app.get("/api/gamification")
     def get_gamification(
@@ -907,8 +1022,29 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         person_id = completion_person_id(body.person_id, account)
         if not db.person_exists(person_id):
             raise HTTPException(404, "Teilnehmer nicht gefunden")
+        if body.co_walker_ids:
+            if len(set(body.co_walker_ids)) != len(body.co_walker_ids) or person_id in body.co_walker_ids:
+                raise HTTPException(422, "Teilnehmende dürfen nur einmal aufgeführt werden")
+            assert_original_assignee(person_id, body.date, body.slot)
+            for co_walker_id in body.co_walker_ids:
+                if db.get_person(co_walker_id) is None:
+                    raise HTTPException(404, "Teilnehmer nicht gefunden")
+            try:
+                result = db.add_shared_walk_completions(
+                    person_id, body.date.isoformat(), body.slot, body.co_walker_ids
+                )
+            except ValueError as exc:
+                raise HTTPException(409, str(exc))
+            for completion in result["completions"]:
+                sync_person_badges(completion["person_id"])
+            return {
+                "ok": True,
+                "created": result["created"],
+                "shared_walk_id": result["shared_walk_id"],
+                "completions": result["completions"],
+            }
         if body.source == "plan":
-            assert_planned_assignment(person_id, body.date, body.slot)
+            assert_can_complete_planned_walk(person_id, body.date, body.slot)
         created = db.add_walk_completion(
             person_id, body.date.isoformat(), body.slot, body.source
         )
@@ -925,8 +1061,12 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         if slot not in SLOTS:
             raise HTTPException(422, f"Ungültiger Slot: {slot}")
         owner_id = completion_person_id(person_id, account)
+        affected_people = set(db.shared_walk_participant_ids(walk_date.isoformat(), slot))
+        affected_people.add(owner_id)
         if not db.remove_walk_completion(owner_id, walk_date.isoformat(), slot):
             raise HTTPException(404, "Abschluss nicht gefunden")
+        for affected_person_id in affected_people:
+            sync_person_badges(affected_person_id)
         return {"ok": True}
 
     @app.api_route("/api/calendar/{calendar_token}.ics", methods=["GET", "HEAD"])

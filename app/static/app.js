@@ -6,6 +6,7 @@ const state = {
   data: null,
   me: null,
   selectedPerson: null,
+  takeovers: [],
   adminData: null,
   adminUserId: null,
   gamification: null,
@@ -17,6 +18,7 @@ const state = {
 
 let authMode = "login";
 let weekRequest = null;
+let sharedWalkTarget = null;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
@@ -44,12 +46,6 @@ function isoWeekOf(date) {
 function fmtDate(iso) {
   const [, m, d] = iso.split("-");
   return `${d}.${m}.`;
-}
-
-function hasCompletion(date, slot, personId) {
-  return Boolean(state.gamification?.completions?.some(completion =>
-    completion.person_id === personId && completion.date === date && completion.slot === slot
-  ));
 }
 
 async function api(path, options) {
@@ -140,13 +136,23 @@ async function removeBrowserPushSubscription() {
 
 // ---------- Laden ------------------------------------------------------------
 
+async function loadTakeovers() {
+  const personId = state.me?.person.id ?? state.selectedPerson;
+  if (!personId) {
+    state.takeovers = [];
+    return;
+  }
+  const params = state.me ? "" : `?person_id=${personId}`;
+  state.takeovers = (await api(`/api/walk-takeovers${params}`)).requests;
+}
+
 async function loadWeek(force = false) {
   const params = state.year && state.week ? `?year=${state.year}&week=${state.week}` : "";
   if (weekRequest) {
     if (!force) return weekRequest;
     await weekRequest.catch(() => {});
   }
-  weekRequest = api(`/api/week${params}`).then(data => {
+  weekRequest = api(`/api/week${params}`).then(async data => {
     state.data = data;
     state.year = data.year;
     state.week = data.week;
@@ -155,6 +161,7 @@ async function loadWeek(force = false) {
     } else if (!data.persons.some(p => p.id === state.selectedPerson)) {
       state.selectedPerson = data.persons.length ? data.persons[0].id : null;
     }
+    await loadTakeovers();
     renderAll();
   }).finally(() => { weekRequest = null; });
   return weekRequest;
@@ -190,6 +197,7 @@ function renderPlan() {
     return;
   }
   const label = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
+  const viewerId = state.me?.person.id ?? state.selectedPerson;
   let html = `<table><thead><tr><th>Tag</th>${SLOT_KEYS.map(s => `<th>${label[s]}</th>`).join("")}</tr></thead><tbody>`;
   for (const day of plan.days) {
     const weekend = day.weekday === "Sa" || day.weekday === "So" ? " class=\"weekend\"" : "";
@@ -198,23 +206,61 @@ function renderPlan() {
       const cell = day.slots[s];
       if (cell.unassigned) {
         html += `<td class="unassigned">⚠️ frei</td>`;
-      } else {
-        const completed = hasCompletion(day.date, s, cell.person_id);
-        const isMine = state.me?.person.id === cell.person_id;
-        const window = state.gamification?.walk_status?.window;
-        const active = state.gamification?.walk_status?.active;
-        const canToggle = completed || (
-          isMine && !active && window?.date === day.date && window?.slot === s
-        );
-        if (isMine && canToggle) {
-          html += `<td><button type="button" class="assignee walk-toggle${completed ? " done" : ""}" style="background:${cell.color}" data-walk-date="${day.date}" data-walk-slot="${s}" title="${completed ? "Erledigt" : "Als erledigt markieren"}" aria-label="${cell.name}: ${completed ? "erledigt" : "als erledigt markieren"}">${cell.name}${completed ? " ✓" : ""}</button></td>`;
-        } else {
-          const marker = completed
-            ? '<span class="completion-mark" title="Erledigt" aria-label="Erledigt">✓</span>'
-            : "";
-          html += `<td><span class="assignee" style="background:${cell.color}">${cell.name}${marker}</span></td>`;
-        }
+        continue;
       }
+      const slotRequests = state.takeovers.filter(request =>
+        request.walk_date === day.date && request.slot === s
+      );
+      const outgoing = slotRequests.find(request => request.requester_id === viewerId);
+      const incoming = slotRequests.find(request => request.assignee_id === viewerId);
+      const pendingIncoming = incoming?.status === "pending";
+      const pending = slotRequests.some(request =>
+        request.status === "pending" || request.status === "approved"
+      );
+      const approvedForViewer = outgoing?.status === "approved";
+      const approvedForOther = incoming?.status === "approved";
+      const slotCompletions = state.gamification?.completions.filter(completion =>
+        completion.date === day.date && completion.slot === s
+      ) || [];
+      const completed = slotCompletions.length > 0;
+      const sharedWalk = slotCompletions.find(completion => completion.shared_walk_id);
+      const isMine = viewerId === cell.person_id;
+      const window = state.gamification?.walk_status?.window;
+      const active = state.gamification?.walk_status?.active;
+      const isCurrentSlot = window?.date === day.date && window?.slot === s;
+      const canComplete = (isMine && !approvedForOther && !pendingIncoming) || approvedForViewer;
+      const canToggle = canComplete && (completed || (!active && isCurrentSlot));
+      const canMarkShared = isMine && !approvedForOther && !pendingIncoming &&
+        !active && isCurrentSlot && !sharedWalk;
+      const shownName = approvedForViewer
+        ? persons.find(person => person.id === viewerId)?.name || cell.name
+        : cell.name;
+      const marker = completed
+        ? sharedWalk
+          ? `<span class="completion-mark" title="Gemeinsam mit ${sharedWalk.shared_group_size} Teilnehmenden" aria-label="Gemeinsam mit ${sharedWalk.shared_group_size} Teilnehmenden">✓ gemeinsam (${sharedWalk.shared_group_size})</span>`
+          : '<span class="completion-mark" title="Erledigt" aria-label="Erledigt">✓</span>'
+        : "";
+      const assignee = canToggle
+        ? `<button type="button" class="assignee walk-toggle${completed ? " done" : ""}" style="background:${cell.color}" data-walk-date="${day.date}" data-walk-slot="${s}" title="${completed ? "Erledigt" : "Als erledigt markieren"}" aria-label="${shownName}: ${completed ? "erledigt" : "als erledigt markieren"}">${shownName}${marker}</button>`
+        : `<span class="assignee" style="background:${cell.color}">${cell.name}${marker}</span>`;
+      let controls = "";
+      if (pendingIncoming) {
+        controls = `<div class="walk-controls"><button type="button" class="secondary takeover-decision" data-request-id="${incoming.id}" data-approved="true">Übernehmen freigeben</button><button type="button" class="secondary takeover-decision" data-request-id="${incoming.id}" data-approved="false">Ich gehe selbst</button></div>`;
+      } else if (outgoing?.status === "pending") {
+        controls = '<small class="walk-request-status">Anfrage läuft</small>';
+      } else if (outgoing?.status === "approved") {
+        controls = '<small class="walk-request-status">Übernahme freigegeben</small>';
+      } else if (outgoing?.status === "declined") {
+        controls = '<small class="walk-request-status">Anfrage abgelehnt</small>';
+      }
+      if (!isMine && !pending && isCurrentSlot && !active && !completed &&
+          (!outgoing || outgoing.status === "declined")) {
+        controls = `<div class="walk-controls"><button type="button" class="secondary takeover-request" data-walk-date="${day.date}" data-walk-slot="${s}">${outgoing ? "Erneut anfragen" : "Übernahme anfragen"}</button></div>`;
+      }
+      if (canMarkShared) {
+        controls += `<div class="walk-controls"><button type="button" class="secondary shared-walk-start" data-walk-date="${day.date}" data-walk-slot="${s}">Gemeinsam gegangen</button></div>`;
+      }
+      html += `<td><div class="plan-cell">${assignee}${controls}</div></td>`;
     }
     html += "</tr>";
   }
@@ -225,6 +271,21 @@ function renderPlan() {
       button.dataset.walkSlot,
       button.classList.contains("done"),
     ).catch(e => toast(e.message));
+  });
+  wrap.querySelectorAll(".takeover-request").forEach(button => {
+    button.onclick = () => requestTakeover(
+      button.dataset.walkDate, button.dataset.walkSlot
+    ).catch(e => toast(e.message));
+  });
+  wrap.querySelectorAll(".takeover-decision").forEach(button => {
+    button.onclick = () => decideTakeover(
+      Number(button.dataset.requestId), button.dataset.approved === "true"
+    ).catch(e => toast(e.message));
+  });
+  wrap.querySelectorAll(".shared-walk-start").forEach(button => {
+    button.onclick = () => openSharedWalkDialog(
+      button.dataset.walkDate, button.dataset.walkSlot
+    );
   });
 }
 
@@ -315,21 +376,97 @@ async function loadGamification() {
   if (state.badgeCatalog) await loadBadgeCatalog(state.badgeHistory);
 }
 
-async function toggleCompletion(date, slot, completed) {
-  if (completed) {
-    await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
-  } else {
+function openSharedWalkDialog(date, slot) {
+  sharedWalkTarget = { date, slot };
+  const ownerId = state.me?.person.id ?? state.selectedPerson;
+  const participants = document.getElementById("sharedWalkParticipants");
+  participants.replaceChildren();
+  for (const person of state.data.persons) {
+    if (person.id === ownerId) continue;
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.value = person.id;
+    label.append(checkbox, document.createTextNode(person.name));
+    participants.appendChild(label);
+  }
+  document.getElementById("sharedWalkDialog").showModal();
+}
+
+async function submitSharedWalk(event) {
+  event.preventDefault();
+  if (!sharedWalkTarget) return;
+  const coWalkerIds = [...document.querySelectorAll(
+    "#sharedWalkParticipants input:checked"
+  )].map(input => Number(input.value));
+  if (!coWalkerIds.length) {
+    toast("Wähle mindestens eine weitere Person aus.");
+    return;
+  }
+  const body = {
+    ...sharedWalkTarget,
+    source: "plan",
+    co_walker_ids: coWalkerIds,
+  };
+  if (!state.me) body.person_id = state.selectedPerson;
+  try {
     await api("/api/completions", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date, slot, source: "plan" }),
+      body: JSON.stringify(body),
+    });
+    document.getElementById("sharedWalkDialog").close();
+    sharedWalkTarget = null;
+    toast("Gemeinsame Gassirunde erfasst");
+    await loadGamification();
+    await loadWeek(true);
+  } catch (error) { toast(error.message); }
+}
+
+async function requestTakeover(date, slot) {
+  const body = { date, slot };
+  if (!state.me) body.person_id = state.selectedPerson;
+  await api("/api/walk-takeovers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  toast("Übernahmeanfrage gesendet");
+  await loadWeek(true);
+}
+
+async function decideTakeover(requestId, approved) {
+  const body = { approved };
+  if (!state.me) body.person_id = state.selectedPerson;
+  await api(`/api/walk-takeovers/${requestId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  toast(approved ? "Übernahme freigegeben" : "Du nimmst die Runde selbst wahr");
+  await loadWeek(true);
+}
+
+async function toggleCompletion(date, slot, completed) {
+  if (completed) {
+    const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
+    await api(`/api/completions/${date}/${slot}${personId}`, { method: "DELETE" });
+  } else {
+    const body = { date, slot, source: "plan" };
+    if (!state.me) body.person_id = state.selectedPerson;
+    await api("/api/completions", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
   }
   await loadGamification();
+  await loadWeek(true);
 }
 
 async function removeCompletion(date, slot) {
-  await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
+  const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
+  await api(`/api/completions/${date}/${slot}${personId}`, { method: "DELETE" });
   await loadGamification();
 }
 
@@ -670,7 +807,14 @@ function renderTabs() {
     btn.textContent = p.name;
     if (p.id === state.selectedPerson) btn.style.background = p.color;
     btn.style.borderColor = p.color;
-    btn.onclick = () => { state.selectedPerson = p.id; renderTabs(); renderGrid(); renderCalLink(); };
+    btn.onclick = async () => {
+      state.selectedPerson = p.id;
+      await loadTakeovers();
+      renderTabs();
+      renderPlan();
+      renderGrid();
+      renderCalLink();
+    };
     el.appendChild(btn);
   }
 }
@@ -992,30 +1136,38 @@ document.getElementById("profilePreferencesForm").onsubmit = async (event) => {
   event.preventDefault();
   try {
     const remindersEnabled = document.getElementById("reminderSetting").checked;
-    const browserPushStatus = remindersEnabled ? await enableBrowserPush() : null;
+    const pushEnabled = document.getElementById("pushSetting").checked;
+    const browserPushStatus = remindersEnabled || pushEnabled ? await enableBrowserPush() : null;
     state.profile = await api("/api/profile/preferences", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         badge_visibility: document.getElementById("badgeVisibilitySetting").checked,
-        push_enabled: document.getElementById("pushSetting").checked,
+        push_enabled: pushEnabled,
         reminders_enabled: remindersEnabled,
       }),
     });
     renderProfile();
-    if (!remindersEnabled) {
-      toast("Profileinstellungen gespeichert; Erinnerungen deaktiviert");
-    } else if (browserPushStatus === "enabled") {
+    if (browserPushStatus === "enabled") {
+      const uses = [
+        remindersEnabled && "Erinnerungen",
+        pushEnabled && "Übernahmeanfragen",
+      ].filter(Boolean).join(" und ");
       document.getElementById("reminderDeliveryStatus").textContent =
-        "Kalenderalarm und Browser-Push sind für diesen Browser aktiv.";
+        `Browser-Push für ${uses} ist auf diesem Gerät aktiv.`;
       toast("Profileinstellungen gespeichert; Browser-Push aktiviert");
-    } else {
+    } else if (browserPushStatus) {
       const reason = browserPushStatus === "denied"
         ? "Browser-Berechtigung fehlt"
         : "Browser-Push ist auf diesem Gerät nicht verfügbar";
+      document.getElementById("reminderDeliveryStatus").textContent = remindersEnabled
+        ? `iCal-Alarm bleibt verfügbar; ${reason}.`
+        : `Übernahmeanfragen werden nicht als Browser-Push zugestellt; ${reason}.`;
+      toast(`Profileinstellungen gespeichert; ${reason}`);
+    } else {
       document.getElementById("reminderDeliveryStatus").textContent =
-        `iCal-Alarm ist aktiv; ${reason}.`;
-      toast(`Erinnerung gespeichert; ${reason}`);
+        "Erinnerungen und Push-Mitteilungen sind deaktiviert.";
+      toast("Profileinstellungen gespeichert");
     }
   } catch (error) { toast(error.message); }
 };
@@ -1083,6 +1235,11 @@ document.getElementById("walkSessionButton").onclick = async () => {
     toast(active ? "Gassi-Runde beendet" : `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`);
     await loadGamification();
   } catch (e) { toast(e.message); }
+};
+document.getElementById("sharedWalkForm").onsubmit = submitSharedWalk;
+document.getElementById("cancelSharedWalkButton").onclick = () => {
+  document.getElementById("sharedWalkDialog").close();
+  sharedWalkTarget = null;
 };
 
 function setAuthMode(mode) {

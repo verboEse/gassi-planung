@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
-  <link rel="stylesheet" href="/static/style.css?v=8">
+  <link rel="stylesheet" href="/static/style.css?v=11">
 </head>
 <body>
   <header>
@@ -172,7 +172,18 @@
     </div>
   </main>
 
+  <dialog id="sharedWalkDialog" aria-labelledby="sharedWalkTitle">
+    <form id="sharedWalkForm">
+      <h2 id="sharedWalkTitle">Gemeinsame Gassirunde</h2>
+      <p>Wähle alle weiteren Teilnehmenden aus.</p>
+      <div id="sharedWalkParticipants"></div>
+      <div class="walk-controls">
+        <button type="submit">Gemeinsam erfassen</button>
+        <button id="cancelSharedWalkButton" class="secondary" type="button">Abbrechen</button>
+      </div>
+    </form>
+  </dialog>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=8"></script>
+  <script src="/static/app.js?v=12"></script>
 </body>
 </html>

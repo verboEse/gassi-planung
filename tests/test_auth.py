@@ -101,6 +101,63 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
         assert client.get(urlsplit(new_url).path).status_code == 200
 
 
+def test_takeover_endpoints_require_authenticated_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 1))
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    secret = "test-session-secret-that-is-long-enough"
+    monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
+    db_path = tmp_path / "takeover-auth.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+
+    with TestClient(app, base_url="https://testserver") as client:
+        body = {"date": "2026-01-01", "slot": "morning"}
+        assert client.get("/api/walk-takeovers").status_code == 401
+        assert client.post("/api/walk-takeovers", json=body).status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        day = next(
+            item for item in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if item["date"] == "2026-01-01"
+        )
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": requester["name"],
+            "password": f"{requester['name'].lower()} family password",
+        }).status_code == 200
+        assert client.post("/api/walk-takeovers", json={
+            **body, "person_id": assignee["id"],
+        }).status_code == 403
+        requested = client.post("/api/walk-takeovers", json=body)
+        assert requested.status_code == 201, requested.text
+        request_id = requested.json()["request"]["id"]
+        assert client.put(f"/api/walk-takeovers/{request_id}", json={
+            "approved": True,
+        }).status_code == 404
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": assignee["name"],
+            "password": f"{assignee['name'].lower()} family password",
+        }).status_code == 200
+        assert client.put(f"/api/walk-takeovers/{request_id}", json={
+            "person_id": requester["id"], "approved": True,
+        }).status_code == 403
+        assert client.put(f"/api/walk-takeovers/{request_id}", json={
+            "approved": True,
+        }).status_code == 200
+
+
 def test_push_subscription_endpoints_are_authenticated_and_owned(tmp_path, monkeypatch):
     secret = "test-session-secret-that-is-long-enough"
     monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
@@ -329,9 +386,11 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         current = client.get("/api/badges").json()
-        assert current["progress"]["available"] == 10
+        assert current["progress"]["available"] == 15
         current_ids = {badge["id"] for badge in current["badges"]}
         assert {
+            "first-shared-walk", "ten-shared-walks", "fifty-shared-walks",
+            "three-person-walk", "four-plus-walk",
             "st-nicholas-walk-2026", "winter-solstice-walk-2026",
             "new-year-walk-2027", "valentines-walk-2027",
             "spring-walk-2027", "earth-day-walk-2027",
@@ -345,7 +404,7 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
         assert one_off_badge["art_key"] == "heart-paws"
         category_ids = {category["id"] for category in current["categories"]}
         assert "loyalty-long-term" not in category_ids
-        assert "community-sharing" not in category_ids
+        assert "community-sharing" in category_ids
         history = client.get("/api/badges?history=true").json()
         assert len(history["badges"]) == 8
         valentines = next(

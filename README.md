@@ -29,13 +29,16 @@ Wochenplan** und stellt ihn als Tabelle dar.
   progressiv (10, 25, 45, 70, … Punkte). Runden werden nur im jeweiligen
   Zeitfenster mit 30 Minuten Toleranz gestartet; manuelle Runden laufen über
   „Jetzt Gassi gehen“ und „Gassi-Runde beenden“.
+- 🐾 Übernahme und gemeinsame Runden: Eine andere Person kann eine geplante Runde
+  mit Zustimmung übernehmen. Gemeinsam erfasste Runden zählen für jede beteiligte
+  Person und schalten gemeinsame Runden- sowie Gruppengrößen-Abzeichen frei.
 - 👤 Profil-Tab mit lokalem Avatar-Upload, Level, Abzeichenkatalog, saisonalem
   Rückblick und persönlichen Anzeige-/Erinnerungseinstellungen. Saisonabzeichen
   werden bis sechs Monate im Voraus gezeigt; noch nicht erreichte Abzeichen sind
   in Graustufen mit eigens gezeichneten, jahresspezifischen SVG-Siegeln dargestellt.
   Externe Avatar-Dienste werden nicht kontaktiert. Die Erinnerungseinstellung
-  steuert iCal-Alarme und Browser-Push; allgemeine Push-Mitteilungen sind nicht Teil
-  dieses Versands.
+  steuert iCal-Alarme und Browser-Push-Erinnerungen; die separate Push-Einstellung
+  steuert Benachrichtigungen zu Übernahmeanfragen und Entscheidungen.
 - 💾 Persistenz in SQLite (kein Setup nötig)
 
 ## Schnellstart

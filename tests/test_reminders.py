@@ -7,7 +7,7 @@ from pywebpush import WebPushException
 from app import main as main_module
 from app.db import Database
 from app.main import create_app
-from app.reminders import dispatch_due_reminders, reminder_jobs
+from app.reminders import dispatch_due_reminders, reminder_jobs, send_event_push
 
 
 def test_reminders_follow_slot_time_in_berlin_across_dst():
@@ -46,6 +46,37 @@ def make_delivery_case(tmp_path, filename="dispatcher.sqlite3"):
         }}],
     }], {person["id"]})
     return db, person, jobs
+
+
+def test_event_push_uses_push_preference_and_removes_expired_subscription(tmp_path):
+    db = Database(tmp_path / "event-push.sqlite3")
+    person = db.add_person("Jan")
+    db.save_push_subscription(
+        person["id"], endpoint="https://fcm.googleapis.com/fcm/send/event",
+        p256dh="key", auth="auth",
+    )
+    config = (None, "mailto:admin@example.test", "public")
+    sent = []
+    sender = lambda *args: sent.append(args)
+
+    assert not send_event_push(db, person["id"], {"title": "Test"}, config, sender)
+    assert sent == []
+
+    db.update_profile_preferences(
+        person["id"], push_enabled=True, reminders_enabled=False
+    )
+    assert send_event_push(db, person["id"], {"title": "Test"}, config, sender)
+    assert sent[0][1]["title"] == "Test"
+
+    class Response:
+        status_code = 410
+        headers = {}
+
+    def expired(*_args):
+        raise WebPushException("expired", response=Response())
+
+    assert not send_event_push(db, person["id"], {"title": "Test"}, config, expired)
+    assert db.list_push_subscriptions(person["id"]) == []
 
 
 def read_outbox(db):

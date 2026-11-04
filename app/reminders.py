@@ -78,6 +78,32 @@ def send_browser_push(subscription: dict, payload: dict, vapid: Vapid, subject: 
     )
 
 
+def send_event_push(
+    db: Database,
+    person_id: int,
+    payload: dict,
+    vapid_config: tuple[Vapid, str, str] | None,
+    sender=send_browser_push,
+) -> bool:
+    if not db.push_enabled(person_id) or vapid_config is None:
+        return False
+    vapid, subject, _ = vapid_config
+    sent = False
+    for subscription in db.list_push_subscriptions(person_id):
+        try:
+            sender(subscription, payload, vapid, subject)
+            sent = True
+        except WebPushException as error:
+            if error.status_code in {404, 410}:
+                db.delete_push_subscription(person_id, subscription["endpoint"])
+            logger.warning("Browser-Push fehlgeschlagen (HTTP %s)", error.status_code)
+        except requests.exceptions.RequestException as error:
+            logger.warning("Browser-Push-Netzwerkfehler (%s)", type(error).__name__)
+        except Exception as error:
+            logger.warning("Browser-Push-Versandfehler (%s)", type(error).__name__)
+    return sent
+
+
 async def dispatch_due_reminders(
     db: Database,
     jobs: list[tuple[int, str, str, str]],

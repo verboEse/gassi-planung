@@ -112,6 +112,22 @@ td.day-label { text-align: left; white-space: nowrap; font-weight: 600; }
 td.day-label .date { color: var(--muted); font-weight: 400; font-size: 0.82rem; margin-left: 0.35rem; }
 tr.weekend td.day-label { color: var(--accent); }
 
+.plan-cell { display: grid; justify-items: center; gap: 0.35rem; }
+.walk-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem; }
+.walk-controls button { padding: 0.25rem 0.4rem; font-size: 0.78rem; }
+.walk-request-status { color: var(--muted); }
+dialog {
+  width: min(32rem, calc(100% - 2rem));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card);
+  color: var(--text);
+}
+dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
+#sharedWalkForm { display: grid; gap: 0.75rem; }
+#sharedWalkParticipants { display: grid; gap: 0.5rem; }
+#sharedWalkParticipants label { display: flex; align-items: center; gap: 0.5rem; }
+
 .assignee {
   display: inline-block;
   border-radius: 6px;
