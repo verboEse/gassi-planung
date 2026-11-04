@@ -342,3 +342,13 @@ select.high { border-color: #27ae60; }
   font-size: 0.92rem;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
+
+.app-footer {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0.75rem 1rem 1.5rem;
+  border-top: 1px solid var(--border);
+  text-align: center;
+}
+.app-footer a { color: var(--accent); }
+.app-footer a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }

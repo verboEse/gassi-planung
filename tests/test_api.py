@@ -666,3 +666,5 @@ class TestWeekAndPlan:
         res = client.get("/")
         assert res.status_code == 200
         assert "Gassi" in res.text
+        assert "https://github.com/verboEse/gassi-planung/issues/new" in res.text
+        assert "Verbesserung vorschlagen" in res.text
