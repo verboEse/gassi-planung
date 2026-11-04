@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
-  <link rel="stylesheet" href="/static/style.css?v=16">
+  <link rel="stylesheet" href="/static/style.css?v=17">
 </head>
 
 <body>
@@ -13,7 +13,7 @@
     <h1>🐕 Gassi-Planung</h1>
     <div id="accountInfo" hidden>
       <button id="walkSessionButton" type="button" hidden>Jetzt Gassi gehen</button>
-      <button id="avatarButton" class="avatar-button" type="button" title="Profilbild ändern">
+      <button id="avatarButton" class="avatar-button" type="button" title="Profil öffnen" aria-label="Profil öffnen">
         <img id="headerAvatar" alt="Profilbild" hidden>
         <span id="headerAvatarFallback" aria-hidden="true"></span>
       </button>
@@ -48,10 +48,7 @@
   </main>
 
   <main id="appContent" hidden>
-    <nav class="app-tabs" aria-label="Hauptnavigation">
-      <button id="planTabButton" type="button">Plan</button>
-      <button id="profileTabButton" type="button">Profil</button>
-    </nav>
+    <button id="planHomeButton" class="secondary view-home" type="button" hidden>Zurück zum Plan</button>
 
     <div id="planView">
       <details class="card" id="planSection" open>
@@ -146,7 +143,10 @@
         <h2>Mein Profil</h2>
         <p id="profileLastActivity" class="hint"></p>
         <input id="avatarUpload" type="file" accept="image/png,image/jpeg,image/webp" hidden>
-        <button id="removeAvatarButton" class="secondary" type="button" hidden>Profilbild entfernen</button>
+        <div class="profile-avatar-actions">
+          <button id="changeAvatarButton" class="secondary" type="button">Profilbild ändern</button>
+          <button id="removeAvatarButton" class="secondary" type="button" hidden>Profilbild entfernen</button>
+        </div>
         <form id="profilePreferencesForm" class="account-form">
           <label><input id="badgeVisibilitySetting" type="checkbox"> Meine Abzeichen in Teilnehmerlisten zeigen</label>
           <label><input id="pushSetting" type="checkbox"> Push-Mitteilungen aktivieren</label>
@@ -158,9 +158,24 @@
         </form>
       </section>
 
+      <details class="card" id="passwordSection">
+        <summary>Passwort ändern</summary>
+        <form id="passwordForm" class="account-form">
+          <label>Aktuelles Passwort
+            <input id="currentPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <label>Neues Passwort (mindestens 12 Zeichen)
+            <input id="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+          </label>
+          <button type="submit">Passwort speichern</button>
+        </form>
+      </details>
+    </div>
+
+    <div id="badgesView" hidden>
       <section class="card badge-overview" id="badgeOverview">
         <div class="badge-heading">
-          <h2>Meine Abzeichen</h2>
+          <h2>Abzeichen &amp; Fortschritt</h2>
           <button id="badgeHistoryButton" class="secondary" type="button">Dein Rückblick</button>
         </div>
         <div id="badgeProgressText"></div>
@@ -188,20 +203,6 @@
         </div>
         <div id="gamificationPeople" class="gamification-people"></div>
         <div id="myCompletions" class="completion-list"></div>
-      </details>
-
-
-      <details class="card" id="passwordSection">
-        <summary>Passwort ändern</summary>
-        <form id="passwordForm" class="account-form">
-          <label>Aktuelles Passwort
-            <input id="currentPassword" type="password" autocomplete="current-password" required>
-          </label>
-          <label>Neues Passwort (mindestens 12 Zeichen)
-            <input id="newPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
-          </label>
-          <button type="submit">Passwort speichern</button>
-        </form>
       </details>
     </div>
   </main>
@@ -238,7 +239,7 @@
         aria-label="Abbrechen">✖️</button>
     </div>
   </dialog>
-  <script src="/static/app.js?v=20"></script>
+  <script src="/static/app.js?v=23"></script>
 </body>
 
 </html>

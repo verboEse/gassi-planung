@@ -63,13 +63,14 @@ PUSH_SERVICE_HOSTS = {
 }
 RELEASE_NEWS = (
     {
-        "id": "0.1.0-walk-coordination",
-        "version": "0.1.0",
-        "title": "Gemeinsame Gassirunden und Übernahmen",
+        "id": "0.2.0-navigation-feedback",
+        "version": "0.2.0",
+        "title": "Mehr Übersicht und Feedback direkt in der App",
         "body": (
-            "Du kannst eine Runde jetzt gemeinsam mit einer anderen Person als erledigt "
-            "eintragen oder eine Übernahme anfragen. Die betroffene Person bestätigt, "
-            "bevor die Übernahme im Plan gilt."
+            "Der Plan ist jetzt deine Startansicht. Über dein Profilbild kommst du zu "
+            "Profil und Einstellungen; über deinen Level zu Abzeichen, Fortschritt und "
+            "Gassirunden. Verbesserungsvorschläge kannst du direkt aus der App einreichen. "
+            "Ungelesene Neuigkeiten werden auch nach dem Neuladen angezeigt."
         ),
     },
 )
@@ -393,8 +394,6 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         @app.get("/api/news")
         def get_news(account: dict | None = Depends(require_account)):
             assert account is not None
-            if account["is_admin"]:
-                return {"news": []}
             read_ids = db.news_read_ids(account["id"])
             return {
                 "news": [item for item in RELEASE_NEWS if item["id"] not in read_ids]
@@ -406,9 +405,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             account: dict | None = Depends(require_account),
         ):
             assert account is not None
-            if account["is_admin"] or not any(
-                item["id"] == news_id for item in RELEASE_NEWS
-            ):
+            if not any(item["id"] == news_id for item in RELEASE_NEWS):
                 raise HTTPException(404, "Neuigkeit nicht gefunden")
             db.mark_news_read(account["id"], news_id)
 
