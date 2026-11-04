@@ -4,18 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
-  <link rel="stylesheet" href="/static/style.css?v=11">
+  <link rel="stylesheet" href="/static/style.css?v=14">
 </head>
 <body>
   <header>
     <h1>🐕 Gassi-Planung</h1>
-    <nav class="week-nav" id="weekNav" hidden>
-      <button id="prevWeek" title="Vorherige Woche">‹</button>
-      <span id="weekLabel">…</span>
-      <button id="nextWeek" title="Nächste Woche">›</button>
-      <button id="todayBtn" class="secondary">Heute</button>
-    </nav>
     <div id="accountInfo" hidden>
+      <button id="walkSessionButton" type="button" hidden>Jetzt Gassi gehen</button>
       <button id="avatarButton" class="avatar-button" type="button" title="Profilbild ändern">
         <img id="headerAvatar" alt="Profilbild" hidden>
         <span id="headerAvatarFallback" aria-hidden="true"></span>
@@ -59,6 +54,12 @@
     <div id="planView">
       <details class="card" id="planSection" open>
         <summary>Plan</summary>
+        <nav class="week-nav" id="weekNav" hidden>
+          <button id="prevWeek" title="Vorherige Woche">‹</button>
+          <span id="weekLabel">…</span>
+          <button id="nextWeek" title="Nächste Woche">›</button>
+          <button id="todayBtn" class="secondary">Heute</button>
+        </nav>
         <div id="planTable" class="table-wrap"></div>
         <div id="planStats" class="stats"></div>
       </details>
@@ -93,6 +94,35 @@
         <h3>Präferenzen des Teilnehmers</h3>
         <p class="hint">Änderungen gelten ab nächster Woche; der aktuelle Wochenplan bleibt unverändert.</p>
         <div id="adminPrefsGrid" class="table-wrap"></div>
+        <form id="adminCompletionForm" class="account-form admin-completion-form">
+          <h3>Gassirunde nachtragen</h3>
+          <div class="admin-completion-fields">
+            <label>Art
+              <select id="adminCompletionKind">
+                <option value="takeover">Übernommene Runde</option>
+                <option value="normal">Normale Runde</option>
+                <option value="group">Gruppenrunde</option>
+              </select>
+            </label>
+            <label>Datum
+              <input id="adminCompletionDate" type="date" required>
+            </label>
+            <label>Zeitfenster
+              <select id="adminCompletionSlot">
+                <option value="morning">Morgens</option>
+                <option value="noon">Mittags</option>
+                <option value="evening">Abends</option>
+              </select>
+            </label>
+          </div>
+          <label id="adminTakeoverPersonLabel"><span id="adminSinglePersonLabel">Übernehmende Person</span>
+            <select id="adminTakeoverPerson" required></select>
+          </label>
+          <label id="adminGroupPeopleLabel" hidden>Teilnehmende der Gruppenrunde (mindestens zwei)
+            <select id="adminGroupPeople" multiple size="4" disabled></select>
+          </label>
+          <button type="submit">Nachtragen</button>
+        </form>
         <form id="adminPasswordForm" class="account-form">
           <label>Neues Passwort für den ausgewählten Teilnehmer (mindestens 12 Zeichen)
             <input id="adminNewPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
@@ -150,7 +180,6 @@
         <div id="gamificationSummary" class="gamification-summary"></div>
         <div id="walkSessionControls">
           <p id="walkSessionHint" class="hint"></p>
-          <button id="walkSessionButton" type="button" hidden>Jetzt Gassi gehen</button>
         </div>
         <div id="gamificationPeople" class="gamification-people"></div>
         <div id="myCompletions" class="completion-list"></div>
@@ -172,18 +201,23 @@
     </div>
   </main>
 
-  <dialog id="sharedWalkDialog" aria-labelledby="sharedWalkTitle">
-    <form id="sharedWalkForm">
-      <h2 id="sharedWalkTitle">Gemeinsame Gassirunde</h2>
-      <p>Wähle alle weiteren Teilnehmenden aus.</p>
-      <div id="sharedWalkParticipants"></div>
-      <div class="walk-controls">
-        <button type="submit">Gemeinsam erfassen</button>
-        <button id="cancelSharedWalkButton" class="secondary" type="button">Abbrechen</button>
-      </div>
-    </form>
+  <dialog id="groupWalkDialog" aria-labelledby="groupWalkTitle">
+    <h2 id="groupWalkTitle">Gemeinsame Runde bestätigen</h2>
+    <p id="groupWalkMessage"></p>
+    <div class="walk-controls">
+      <button id="groupWalkConfirmButton" class="secondary emoji-button" type="button" title="Gemeinsame Runde eintragen" aria-label="Gemeinsame Runde eintragen">✅</button>
+      <button id="groupWalkCancelButton" class="secondary emoji-button" type="button" title="Abbrechen" aria-label="Abbrechen">✖️</button>
+    </div>
   </dialog>
   <div id="toast" class="toast" hidden></div>
-  <script src="/static/app.js?v=12"></script>
+  <dialog id="takeoverApprovalDialog" aria-labelledby="takeoverApprovalTitle">
+    <h2 id="takeoverApprovalTitle">Übernahme freigeben?</h2>
+    <p id="takeoverApprovalMessage"></p>
+    <div class="walk-controls">
+      <button id="takeoverApprovalConfirmButton" class="secondary emoji-button" type="button" title="Übernahme freigeben" aria-label="Übernahme freigeben">✅</button>
+      <button id="takeoverApprovalCancelButton" class="secondary emoji-button" type="button" title="Abbrechen" aria-label="Abbrechen">✖️</button>
+    </div>
+  </dialog>
+  <script src="/static/app.js?v=18"></script>
 </body>
 </html>

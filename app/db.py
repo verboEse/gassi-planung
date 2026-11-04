@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS walk_takeover_requests (
     requester_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
     assignee_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'pending'
-        CHECK (status IN ('pending', 'approved', 'declined')),
+        CHECK (status IN ('pending', 'approved', 'declined', 'shared')),
     created_at TEXT NOT NULL,
     decided_at TEXT,
     CHECK (requester_id != assignee_id)
@@ -313,6 +313,24 @@ class Database:
             con.execute(WEEKLY_PLANS_DDL)
             con.execute(SHARED_WALKS_DDL)
             con.execute(WALK_TAKEOVER_REQUESTS_DDL)
+            takeover_schema = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'walk_takeover_requests'"
+            ).fetchone()
+            if takeover_schema and "'shared'" not in takeover_schema["sql"]:
+                con.execute("DROP INDEX IF EXISTS idx_active_walk_takeover_slot")
+                con.execute(
+                    "ALTER TABLE walk_takeover_requests "
+                    "RENAME TO walk_takeover_requests_old"
+                )
+                con.execute(WALK_TAKEOVER_REQUESTS_DDL)
+                con.execute(
+                    """INSERT INTO walk_takeover_requests
+                       (id, walk_date, slot, requester_id, assignee_id, status, created_at, decided_at)
+                       SELECT id, walk_date, slot, requester_id, assignee_id, status, created_at, decided_at
+                       FROM walk_takeover_requests_old"""
+                )
+                con.execute("DROP TABLE walk_takeover_requests_old")
             con.execute(ACTIVE_WALK_TAKEOVER_INDEX_DDL)
             con.execute(WALK_COMPLETIONS_DDL)
             completion_cols = {row[1] for row in con.execute("PRAGMA table_info(walk_completions)")}
@@ -1072,69 +1090,120 @@ class Database:
     # --- Erledigte Gassirunden ----------------------------------------------
 
     def add_shared_walk_completions(
-        self, owner_id: int, walk_date: str, slot: str, participant_ids: list[int]
+        self,
+        owner_id: int,
+        walk_date: str,
+        slot: str,
+        participant_ids: list[int],
+        source: str = "plan",
     ) -> dict:
-        participants = list(dict.fromkeys([owner_id, *participant_ids]))
-        if len(participants) < 2:
-            raise ValueError("Eine gemeinsame Runde braucht mindestens zwei Teilnehmende")
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         created = False
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
-            group = con.execute(
-                "SELECT id, created_by FROM shared_walks WHERE walk_date = ? AND slot = ?",
-                (walk_date, slot),
+            return self._add_shared_walk_completions(
+                con, owner_id, walk_date, slot, participant_ids, created_at, source
+            )
+
+    def complete_walk_takeover_as_shared(
+        self, request_id: int, assignee_id: int, decided_at: str
+    ) -> dict | None:
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            request = con.execute(
+                """SELECT * FROM walk_takeover_requests
+                   WHERE id = ? AND assignee_id = ? AND status = 'pending'""",
+                (request_id, assignee_id),
             ).fetchone()
-            if group and group["created_by"] != owner_id:
-                raise ValueError("Die Runde ist bereits einer anderen Person zugeordnet")
-            if group is None:
-                cur = con.execute(
-                    """
-                    INSERT INTO shared_walks (walk_date, slot, created_by, created_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (walk_date, slot, owner_id, created_at),
+            if request is None:
+                return None
+            existing_completion = con.execute(
+                """SELECT 1 FROM walk_completions
+                   WHERE walk_date = ? AND slot = ? LIMIT 1""",
+                (request["walk_date"], request["slot"]),
+            ).fetchone()
+            if existing_completion:
+                return None
+
+            shared = self._add_shared_walk_completions(
+                con,
+                assignee_id,
+                request["walk_date"],
+                request["slot"],
+                [request["requester_id"]],
+                decided_at,
+            )
+            updated = con.execute(
+                """UPDATE walk_takeover_requests SET status = 'shared', decided_at = ?
+                   WHERE id = ? AND assignee_id = ? AND status = 'pending'""",
+                (decided_at, request_id, assignee_id),
+            )
+            if not updated.rowcount:
+                con.rollback()
+                return None
+            request = con.execute(
+                "SELECT * FROM walk_takeover_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+        return {"request": dict(request), **shared}
+
+    def _add_shared_walk_completions(
+        self,
+        con: sqlite3.Connection,
+        owner_id: int,
+        walk_date: str,
+        slot: str,
+        participant_ids: list[int],
+        created_at: str,
+        source: str = "plan",
+    ) -> dict:
+        participants = list(dict.fromkeys([owner_id, *participant_ids]))
+        if len(participants) < 2:
+            raise ValueError("Eine gemeinsame Runde braucht mindestens zwei Teilnehmende")
+        group = con.execute(
+            "SELECT id, created_by FROM shared_walks WHERE walk_date = ? AND slot = ?",
+            (walk_date, slot),
+        ).fetchone()
+        if group and group["created_by"] != owner_id:
+            raise ValueError("Die Runde ist bereits einer anderen Person zugeordnet")
+        created = False
+        if group is None:
+            cur = con.execute(
+                """INSERT INTO shared_walks (walk_date, slot, created_by, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (walk_date, slot, owner_id, created_at),
+            )
+            group_id = cur.lastrowid
+            created = True
+        else:
+            group_id = group["id"]
+        for person_id in participants:
+            existing = con.execute(
+                """SELECT shared_walk_id FROM walk_completions
+                   WHERE person_id = ? AND walk_date = ? AND slot = ?""",
+                (person_id, walk_date, slot),
+            ).fetchone()
+            if existing is None:
+                con.execute(
+                    """INSERT INTO walk_completions
+                       (person_id, walk_date, slot, source, created_at, shared_walk_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (person_id, walk_date, slot, source, created_at, group_id),
                 )
-                group_id = cur.lastrowid
                 created = True
-            else:
-                group_id = group["id"]
-            for person_id in participants:
-                existing = con.execute(
-                    """
-                    SELECT shared_walk_id FROM walk_completions
-                    WHERE person_id = ? AND walk_date = ? AND slot = ?
-                    """,
-                    (person_id, walk_date, slot),
-                ).fetchone()
-                if existing is None:
-                    con.execute(
-                        """
-                        INSERT INTO walk_completions
-                            (person_id, walk_date, slot, source, created_at, shared_walk_id)
-                        VALUES (?, ?, ?, 'plan', ?, ?)
-                        """,
-                        (person_id, walk_date, slot, created_at, group_id),
-                    )
-                    created = True
-                elif existing["shared_walk_id"] is None:
-                    con.execute(
-                        """
-                        UPDATE walk_completions SET shared_walk_id = ?
-                        WHERE person_id = ? AND walk_date = ? AND slot = ?
-                        """,
-                        (group_id, person_id, walk_date, slot),
-                    )
-                    created = True
-                elif existing["shared_walk_id"] != group_id:
-                    raise ValueError("Abschluss gehört bereits zu einer anderen gemeinsamen Runde")
-            rows = con.execute(
-                """
-                SELECT person_id, walk_date AS date, slot, source, created_at, shared_walk_id
-                FROM walk_completions WHERE shared_walk_id = ? ORDER BY person_id
-                """,
-                (group_id,),
-            ).fetchall()
+            elif existing["shared_walk_id"] is None:
+                con.execute(
+                    """UPDATE walk_completions SET shared_walk_id = ?
+                       WHERE person_id = ? AND walk_date = ? AND slot = ?""",
+                    (group_id, person_id, walk_date, slot),
+                )
+                created = True
+            elif existing["shared_walk_id"] != group_id:
+                raise ValueError("Abschluss gehört bereits zu einer anderen gemeinsamen Runde")
+        rows = con.execute(
+            """SELECT person_id, walk_date AS date, slot, source, created_at, shared_walk_id
+               FROM walk_completions WHERE shared_walk_id = ? ORDER BY person_id""",
+            (group_id,),
+        ).fetchall()
         return {"shared_walk_id": group_id, "created": created, "completions": [dict(row) for row in rows]}
 
     def add_walk_completion(

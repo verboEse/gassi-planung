@@ -18,7 +18,8 @@ const state = {
 
 let authMode = "login";
 let weekRequest = null;
-let sharedWalkTarget = null;
+let groupWalkTarget = null;
+let takeoverApprovalTarget = null;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
@@ -230,8 +231,6 @@ function renderPlan() {
       const isCurrentSlot = window?.date === day.date && window?.slot === s;
       const canComplete = (isMine && !approvedForOther && !pendingIncoming) || approvedForViewer;
       const canToggle = canComplete && (completed || (!active && isCurrentSlot));
-      const canMarkShared = isMine && !approvedForOther && !pendingIncoming &&
-        !active && isCurrentSlot && !sharedWalk;
       const shownName = approvedForViewer
         ? persons.find(person => person.id === viewerId)?.name || cell.name
         : cell.name;
@@ -245,20 +244,15 @@ function renderPlan() {
         : `<span class="assignee" style="background:${cell.color}">${cell.name}${marker}</span>`;
       let controls = "";
       if (pendingIncoming) {
-        controls = `<div class="walk-controls"><button type="button" class="secondary takeover-decision" data-request-id="${incoming.id}" data-approved="true">Übernehmen freigeben</button><button type="button" class="secondary takeover-decision" data-request-id="${incoming.id}" data-approved="false">Ich gehe selbst</button></div>`;
+        controls = `<div class="walk-controls"><button type="button" class="secondary emoji-button takeover-decision" data-request-id="${incoming.id}" data-approved="true" title="Übernahme freigeben" aria-label="Übernahme freigeben">✅</button><button type="button" class="secondary emoji-button takeover-decision" data-request-id="${incoming.id}" data-approved="false" title="Ich gehe selbst" aria-label="Ich gehe selbst">🐕</button><button type="button" class="secondary emoji-button group-walk-decision" data-request-id="${incoming.id}" data-requester-id="${incoming.requester_id}" data-walk-date="${day.date}" data-walk-slot="${s}" title="Gemeinsame Runde bestätigen" aria-label="Gemeinsame Runde bestätigen">👥</button></div>`;
+      } else if (incoming?.status === "shared" || outgoing?.status === "shared") {
+        controls = '<small class="walk-request-status">Gemeinsame Runde bestätigt</small>';
       } else if (outgoing?.status === "pending") {
         controls = '<small class="walk-request-status">Anfrage läuft</small>';
       } else if (outgoing?.status === "approved") {
         controls = '<small class="walk-request-status">Übernahme freigegeben</small>';
       } else if (outgoing?.status === "declined") {
         controls = '<small class="walk-request-status">Anfrage abgelehnt</small>';
-      }
-      if (!isMine && !pending && isCurrentSlot && !active && !completed &&
-          (!outgoing || outgoing.status === "declined")) {
-        controls = `<div class="walk-controls"><button type="button" class="secondary takeover-request" data-walk-date="${day.date}" data-walk-slot="${s}">${outgoing ? "Erneut anfragen" : "Übernahme anfragen"}</button></div>`;
-      }
-      if (canMarkShared) {
-        controls += `<div class="walk-controls"><button type="button" class="secondary shared-walk-start" data-walk-date="${day.date}" data-walk-slot="${s}">Gemeinsam gegangen</button></div>`;
       }
       html += `<td><div class="plan-cell">${assignee}${controls}</div></td>`;
     }
@@ -272,19 +266,19 @@ function renderPlan() {
       button.classList.contains("done"),
     ).catch(e => toast(e.message));
   });
-  wrap.querySelectorAll(".takeover-request").forEach(button => {
-    button.onclick = () => requestTakeover(
-      button.dataset.walkDate, button.dataset.walkSlot
-    ).catch(e => toast(e.message));
-  });
   wrap.querySelectorAll(".takeover-decision").forEach(button => {
-    button.onclick = () => decideTakeover(
-      Number(button.dataset.requestId), button.dataset.approved === "true"
-    ).catch(e => toast(e.message));
+    const requestId = Number(button.dataset.requestId);
+    const approved = button.dataset.approved === "true";
+    button.onclick = () => approved
+      ? openTakeoverApprovalDialog(requestId)
+      : decideTakeover(requestId, false).catch(e => toast(e.message));
   });
-  wrap.querySelectorAll(".shared-walk-start").forEach(button => {
-    button.onclick = () => openSharedWalkDialog(
-      button.dataset.walkDate, button.dataset.walkSlot
+  wrap.querySelectorAll(".group-walk-decision").forEach(button => {
+    button.onclick = () => openGroupWalkDialog(
+      Number(button.dataset.requestId),
+      Number(button.dataset.requesterId),
+      button.dataset.walkDate,
+      button.dataset.walkSlot,
     );
   });
 }
@@ -317,13 +311,23 @@ function renderGamification() {
     ? `Du: ${me.points} Punkte · Level ${me.level}`
     : "Fortschritt der Gruppe";
   const walkStatus = state.gamification.walk_status;
+  const walkWindow = walkStatus.window;
+  const ownTakeover = walkWindow && state.takeovers.find(request =>
+    request.walk_date === walkWindow.date &&
+    request.slot === walkWindow.slot &&
+    request.requester_id === state.me?.person.id
+  );
+  const awaitingTakeover = ownTakeover?.status === "pending";
   sessionButton.hidden = !state.me;
-  sessionButton.disabled = Boolean(state.me) && !walkStatus.active && !walkStatus.can_start;
-  sessionButton.textContent = walkStatus.active ? "Gassi-Runde beenden" : "Jetzt Gassi gehen";
+  sessionButton.disabled = Boolean(state.me) && !walkStatus.active &&
+    (!walkStatus.can_start || !walkStatus.assignee_id || awaitingTakeover);
+  sessionButton.textContent = walkStatus.active
+    ? "Gassi-Runde beenden"
+    : awaitingTakeover ? "Anfrage läuft" : "Jetzt Gassi gehen";
   sessionHint.textContent = walkStatus.active
     ? `Gestartet: ${SLOT_LABELS[walkStatus.active.slot]}`
-    : walkStatus.window
-      ? `Aktuelles Zeitfenster: ${SLOT_LABELS[walkStatus.window.slot]}`
+    : walkWindow
+      ? `Aktuelles Zeitfenster: ${SLOT_LABELS[walkWindow.slot]}`
       : "Start nur im jeweiligen Zeitfenster mit 30 Minuten Toleranz möglich.";
   people.replaceChildren();
   for (const person of state.gamification.persons) {
@@ -376,53 +380,6 @@ async function loadGamification() {
   if (state.badgeCatalog) await loadBadgeCatalog(state.badgeHistory);
 }
 
-function openSharedWalkDialog(date, slot) {
-  sharedWalkTarget = { date, slot };
-  const ownerId = state.me?.person.id ?? state.selectedPerson;
-  const participants = document.getElementById("sharedWalkParticipants");
-  participants.replaceChildren();
-  for (const person of state.data.persons) {
-    if (person.id === ownerId) continue;
-    const label = document.createElement("label");
-    const checkbox = document.createElement("input");
-    checkbox.type = "checkbox";
-    checkbox.value = person.id;
-    label.append(checkbox, document.createTextNode(person.name));
-    participants.appendChild(label);
-  }
-  document.getElementById("sharedWalkDialog").showModal();
-}
-
-async function submitSharedWalk(event) {
-  event.preventDefault();
-  if (!sharedWalkTarget) return;
-  const coWalkerIds = [...document.querySelectorAll(
-    "#sharedWalkParticipants input:checked"
-  )].map(input => Number(input.value));
-  if (!coWalkerIds.length) {
-    toast("Wähle mindestens eine weitere Person aus.");
-    return;
-  }
-  const body = {
-    ...sharedWalkTarget,
-    source: "plan",
-    co_walker_ids: coWalkerIds,
-  };
-  if (!state.me) body.person_id = state.selectedPerson;
-  try {
-    await api("/api/completions", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    document.getElementById("sharedWalkDialog").close();
-    sharedWalkTarget = null;
-    toast("Gemeinsame Gassirunde erfasst");
-    await loadGamification();
-    await loadWeek(true);
-  } catch (error) { toast(error.message); }
-}
-
 async function requestTakeover(date, slot) {
   const body = { date, slot };
   if (!state.me) body.person_id = state.selectedPerson;
@@ -445,6 +402,51 @@ async function decideTakeover(requestId, approved) {
   });
   toast(approved ? "Übernahme freigegeben" : "Du nimmst die Runde selbst wahr");
   await loadWeek(true);
+}
+
+function openTakeoverApprovalDialog(requestId) {
+  const request = state.takeovers.find(item => item.id === requestId);
+  if (!request) return;
+  const requester = state.data.persons.find(person => person.id === request.requester_id);
+  takeoverApprovalTarget = requestId;
+  document.getElementById("takeoverApprovalMessage").textContent =
+    `${requester?.name || "Die anfragende Person"} darf die Runde ${SLOT_LABELS[request.slot]} am ${fmtDate(request.walk_date)} übernehmen. Möchtest du die Übernahme freigeben?`;
+  document.getElementById("takeoverApprovalDialog").showModal();
+}
+
+async function confirmTakeoverApproval() {
+  if (takeoverApprovalTarget === null) return;
+  const requestId = takeoverApprovalTarget;
+  document.getElementById("takeoverApprovalDialog").close();
+  try {
+    await decideTakeover(requestId, true);
+  } catch (error) { toast(error.message); }
+}
+
+function openGroupWalkDialog(requestId, requesterId, date, slot) {
+  groupWalkTarget = { requestId };
+  const requester = state.data.persons.find(person => person.id === requesterId);
+  document.getElementById("groupWalkMessage").textContent =
+    `Die Runde ${SLOT_LABELS[slot]} am ${fmtDate(date)} für dich und ${requester?.name || "die anfragende Person"} als gemeinsam erledigt eintragen?`;
+  document.getElementById("groupWalkDialog").showModal();
+}
+
+async function confirmGroupWalk() {
+  if (!groupWalkTarget) return;
+  const { requestId } = groupWalkTarget;
+  const body = {};
+  if (!state.me) body.person_id = state.selectedPerson;
+  try {
+    await api(`/api/walk-takeovers/${requestId}/group`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    document.getElementById("groupWalkDialog").close();
+    toast("Gemeinsame Runde bestätigt");
+    await loadGamification();
+    await loadWeek(true);
+  } catch (error) { toast(error.message); }
 }
 
 async function toggleCompletion(date, slot, completed) {
@@ -961,7 +963,49 @@ function renderAdminUsers() {
   }
   if (state.adminUserId !== null) select.value = String(state.adminUserId);
   select.disabled = !users.length;
+  renderAdminCompletionPeople(users);
+  renderAdminCompletionKind();
+  setAdminCompletionDateBounds();
   renderAdminPrefs();
+}
+
+function renderAdminCompletionPeople(users) {
+  const takeoverSelect = document.getElementById("adminTakeoverPerson");
+  const groupSelect = document.getElementById("adminGroupPeople");
+  for (const select of [takeoverSelect, groupSelect]) {
+    select.replaceChildren();
+    for (const user of users) {
+      const option = document.createElement("option");
+      option.value = user.id;
+      option.textContent = user.name;
+      select.appendChild(option);
+    }
+  }
+  if (state.adminUserId !== null) takeoverSelect.value = String(state.adminUserId);
+}
+
+function renderAdminCompletionKind() {
+  const kind = document.getElementById("adminCompletionKind").value;
+  const isGroup = kind === "group";
+  const takeoverLabel = document.getElementById("adminTakeoverPersonLabel");
+  const takeoverSelect = document.getElementById("adminTakeoverPerson");
+  const groupLabel = document.getElementById("adminGroupPeopleLabel");
+  const groupSelect = document.getElementById("adminGroupPeople");
+  document.getElementById("adminSinglePersonLabel").textContent =
+    kind === "normal" ? "Teilnehmer" : "Übernehmende Person";
+  takeoverLabel.hidden = isGroup;
+  takeoverSelect.disabled = isGroup || !takeoverSelect.options.length;
+  groupLabel.hidden = !isGroup;
+  groupSelect.disabled = !isGroup || !groupSelect.options.length;
+}
+
+function setAdminCompletionDateBounds() {
+  const input = document.getElementById("adminCompletionDate");
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  const today = now.toISOString().slice(0, 10);
+  input.max = today;
+  if (!input.value) input.value = today;
 }
 
 function renderAdminPrefs() {
@@ -1021,11 +1065,24 @@ function renderAdminActivity(events) {
   for (const event of events) {
     const row = body.insertRow();
     row.insertCell().textContent = new Date(event.occurred_at).toLocaleString("de-DE");
-    row.insertCell().textContent = event.action === "login" ? "Anmeldung" : "Präferenz geändert";
+    row.insertCell().textContent = event.action === "login"
+      ? "Anmeldung"
+      : event.action === "preference_change"
+        ? "Präferenz geändert"
+        : "Gassirunde nachgetragen";
     row.insertCell().textContent = event.subject;
-    const details = event.action === "login"
-      ? `Anmeldung von ${event.actor}`
-      : `${event.actor}: ${dayNames[event.details.weekday - 1]} ${slotNames[event.details.slot]} (${event.details.old_value ?? "–"} → ${event.details.new_value ?? "–"})`;
+    let details;
+    if (event.action === "login") {
+      details = `Anmeldung von ${event.actor}`;
+    } else if (event.action === "preference_change") {
+      details = `${event.actor}: ${dayNames[event.details.weekday - 1]} ${slotNames[event.details.slot]} (${event.details.old_value ?? "–"} → ${event.details.new_value ?? "–"})`;
+    } else {
+      const kind = event.details.kind === "group"
+        ? "Gruppenrunde"
+        : event.details.kind === "normal" ? "Normale Runde" : "Übernommene Runde";
+      const date = new Date(`${event.details.date}T00:00:00`).toLocaleDateString("de-DE");
+      details = `${event.actor}: ${kind} · ${date} · ${slotNames[event.details.slot]} (${event.details.participants.join(", ")})`;
+    }
     row.insertCell().textContent = details;
   }
   wrap.appendChild(table);
@@ -1037,6 +1094,39 @@ async function refreshAdminActivity() {
     const activity = await api("/api/admin/activity");
     renderAdminActivity(activity.events);
   } catch (e) { toast(e.message); }
+}
+
+async function submitAdminCompletion(event) {
+  event.preventDefault();
+  const kind = document.getElementById("adminCompletionKind").value;
+  const personIds = kind === "group"
+    ? [...document.getElementById("adminGroupPeople").selectedOptions].map(option => Number(option.value))
+    : [Number(document.getElementById("adminTakeoverPerson").value)];
+  if (kind === "group" && personIds.length < 2) {
+    toast("Wähle mindestens zwei Teilnehmende für die Gruppenrunde aus.");
+    return;
+  }
+  try {
+    const result = await api("/api/admin/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind,
+        date: document.getElementById("adminCompletionDate").value,
+        slot: document.getElementById("adminCompletionSlot").value,
+        person_ids: personIds,
+      }),
+    });
+    toast(result.created
+      ? kind === "group"
+        ? "Gruppenrunde nachgetragen"
+        : kind === "normal" ? "Normale Runde nachgetragen" : "Übernommene Runde nachgetragen"
+      : "Für diese Runde gab es bereits einen Eintrag.");
+    document.getElementById("adminGroupPeople").selectedIndex = -1;
+    await loadGamification();
+    await loadWeek(true);
+    await refreshAdminActivity();
+  } catch (error) { toast(error.message); }
 }
 
 async function loadAdminPanel() {
@@ -1227,8 +1317,27 @@ document.getElementById("addPersonForm").onsubmit = async (ev) => {
 };
 
 document.getElementById("walkSessionButton").onclick = async () => {
-  const active = state.gamification?.walk_status?.active;
+  const walkStatus = state.gamification?.walk_status;
+  const active = walkStatus?.active;
   try {
+    if (!active) {
+      const walkWindow = walkStatus?.window;
+      if (!walkWindow || !walkStatus.can_start) return;
+      if (!walkStatus.assignee_id) {
+        toast("Für diese Runde ist keine Person eingetragen");
+        return;
+      }
+      const ownTakeover = state.takeovers.find(request =>
+        request.walk_date === walkWindow.date &&
+        request.slot === walkWindow.slot &&
+        request.requester_id === state.me?.person.id
+      );
+      if (ownTakeover?.status === "pending") return;
+      if (walkStatus.assignee_id !== state.me?.person.id && ownTakeover?.status !== "approved") {
+        await requestTakeover(walkWindow.date, walkWindow.slot);
+        return;
+      }
+    }
     const result = await api(active ? "/api/walks/end" : "/api/walks/start", {
       method: "POST",
     });
@@ -1236,11 +1345,20 @@ document.getElementById("walkSessionButton").onclick = async () => {
     await loadGamification();
   } catch (e) { toast(e.message); }
 };
-document.getElementById("sharedWalkForm").onsubmit = submitSharedWalk;
-document.getElementById("cancelSharedWalkButton").onclick = () => {
-  document.getElementById("sharedWalkDialog").close();
-  sharedWalkTarget = null;
+document.getElementById("groupWalkConfirmButton").onclick = confirmGroupWalk;
+document.getElementById("groupWalkCancelButton").onclick = () => {
+  document.getElementById("groupWalkDialog").close();
 };
+document.getElementById("groupWalkDialog").addEventListener("close", () => {
+  groupWalkTarget = null;
+});
+document.getElementById("takeoverApprovalConfirmButton").onclick = confirmTakeoverApproval;
+document.getElementById("takeoverApprovalCancelButton").onclick = () => {
+  document.getElementById("takeoverApprovalDialog").close();
+};
+document.getElementById("takeoverApprovalDialog").addEventListener("close", () => {
+  takeoverApprovalTarget = null;
+});
 
 function setAuthMode(mode) {
   authMode = mode;
@@ -1279,8 +1397,11 @@ document.getElementById("authForm").onsubmit = async (ev) => {
 
 document.getElementById("adminUserSelect").onchange = (ev) => {
   state.adminUserId = Number(ev.target.value);
+  document.getElementById("adminTakeoverPerson").value = String(state.adminUserId);
   renderAdminPrefs();
 };
+document.getElementById("adminCompletionKind").onchange = renderAdminCompletionKind;
+document.getElementById("adminCompletionForm").onsubmit = submitAdminCompletion;
 document.getElementById("refreshActivity").onclick = () => refreshAdminActivity();
 document.getElementById("adminPasswordForm").onsubmit = async (ev) => {
   ev.preventDefault();

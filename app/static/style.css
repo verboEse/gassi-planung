@@ -61,10 +61,10 @@ button {
 button:hover { filter: brightness(1.15); }
 button.secondary { background: transparent; border: 1px solid var(--border); color: var(--text); }
 
-.week-nav { display: flex; align-items: center; gap: 0.5rem; }
+.week-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-bottom: 0.75rem; }
 #weekLabel { font-weight: 600; min-width: 9.5rem; text-align: center; }
 
-#accountInfo { display: flex; align-items: center; gap: 0.6rem; }
+#accountInfo { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.6rem; }
 .avatar-button {
   display: grid;
   place-items: center;
@@ -85,7 +85,7 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
 .auth-modes .active { background: var(--accent); color: #fff; }
 #authForm, .account-form { display: grid; gap: 0.8rem; }
 #authForm label, .account-form label { display: grid; gap: 0.3rem; }
-#authForm input, .account-form input {
+#authForm input, .account-form input, .account-form select {
   background: #222b34;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -94,6 +94,11 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
   font-size: 0.95rem;
 }
 #adminSection > label { display: grid; gap: 0.3rem; max-width: 24rem; }
+.admin-completion-form { border-top: 1px solid var(--border); padding-top: 1rem; }
+.admin-completion-form h3 { margin: 0; }
+.admin-completion-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.8rem; }
+.admin-completion-fields label, .admin-completion-form > label { display: grid; gap: 0.3rem; }
+.admin-completion-form select[multiple] { min-height: 7rem; }
 .admin-activity-heading { display: flex; align-items: center; justify-content: space-between; }
 #adminActivity { max-height: 24rem; overflow: auto; }
 
@@ -115,6 +120,15 @@ tr.weekend td.day-label { color: var(--accent); }
 .plan-cell { display: grid; justify-items: center; gap: 0.35rem; }
 .walk-controls { display: flex; flex-wrap: wrap; justify-content: center; gap: 0.25rem; }
 .walk-controls button { padding: 0.25rem 0.4rem; font-size: 0.78rem; }
+.walk-controls .emoji-button {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+}
 .walk-request-status { color: var(--muted); }
 dialog {
   width: min(32rem, calc(100% - 2rem));
@@ -124,10 +138,6 @@ dialog {
   color: var(--text);
 }
 dialog::backdrop { background: rgba(0, 0, 0, 0.65); }
-#sharedWalkForm { display: grid; gap: 0.75rem; }
-#sharedWalkParticipants { display: grid; gap: 0.5rem; }
-#sharedWalkParticipants label { display: flex; align-items: center; gap: 0.5rem; }
-
 .assignee {
   display: inline-block;
   border-radius: 6px;

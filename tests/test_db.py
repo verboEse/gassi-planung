@@ -71,6 +71,45 @@ class TestMigration:
         db = Database(db_file)  # zweiter Start: keine Doppel-Migration
         assert db.prefs_all()[(1, "morning", 1)] == 1
 
+    def test_takeover_status_migration_preserves_requests(self, tmp_path):
+        db_file = tmp_path / "takeovers.sqlite3"
+        db = Database(db_file)
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+        with sqlite3.connect(db_file) as con:
+            con.execute("DROP INDEX IF EXISTS idx_active_walk_takeover_slot")
+            con.execute("DROP TABLE walk_takeover_requests")
+            con.execute("""
+                CREATE TABLE walk_takeover_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    walk_date TEXT NOT NULL,
+                    slot TEXT NOT NULL CHECK (slot IN ('morning', 'noon', 'evening')),
+                    requester_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    assignee_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'declined')),
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    CHECK (requester_id != assignee_id)
+                )
+            """)
+            con.execute(
+                """INSERT INTO walk_takeover_requests
+                   (walk_date, slot, requester_id, assignee_id, status, created_at)
+                   VALUES ('2026-10-12', 'morning', ?, ?, 'pending', '2026-10-12T06:00:00Z')""",
+                (laura["id"], jan["id"]),
+            )
+
+        db = Database(db_file)
+
+        assert db.list_walk_takeover_requests(jan["id"])[0]["status"] == "pending"
+        with sqlite3.connect(db_file) as con:
+            schema = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'walk_takeover_requests'"
+            ).fetchone()[0]
+        assert "'shared'" in schema
+
 
 class TestProfileSchema:
     def test_profile_fields_and_badge_seeds_on_existing_database(self, tmp_path):
