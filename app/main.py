@@ -19,7 +19,7 @@ from datetime import date as dt_date
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
@@ -1141,13 +1141,29 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
     @app.post("/api/walks/start")
     def start_walk(
         person_id: int | None = Query(None, ge=1),
+        date: dt_date | None = None,
+        weekday: Annotated[int | None, Query(ge=1, le=7)] = None,
+        slot: str | None = None,
         account: dict | None = Depends(require_account),
     ):
         owner_id = completion_person_id(person_id, account)
         if not db.person_exists(owner_id):
             raise HTTPException(404, "Teilnehmer nicht gefunden")
+        has_target = date is not None or weekday is not None or slot is not None
+        if has_target and (slot not in SLOTS or (date is None) == (weekday is None)):
+            raise HTTPException(422, "Ungültiger Kalenderlink")
         active = db.active_walk(owner_id)
         if active:
+            if has_target:
+                active_date = dt_date.fromisoformat(active["date"])
+                target_matches_active = (
+                    date == active_date
+                    if date is not None
+                    else active_date == berlin_now().date()
+                    and weekday == active_date.isoweekday()
+                )
+                if slot != active["slot"] or not target_matches_active:
+                    raise HTTPException(409, "Eine andere Gassirunde ist bereits gestartet")
             return {"ok": True, "created": False, "active": active}
         window = current_walk_window()
         if not window:
@@ -1155,8 +1171,15 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 422,
                 "Gassi-Runden können nur im aktuellen Zeitfenster mit 30 Minuten Toleranz gestartet werden",
             )
+        walk_date = dt_date.fromisoformat(window["date"])
+        if has_target and (
+            slot != window["slot"]
+            or (date is not None and date != walk_date)
+            or (weekday is not None and weekday != walk_date.isoweekday())
+        ):
+            raise HTTPException(422, "Der Kalenderlink gilt für eine andere Gassirunde")
         assert_can_complete_planned_walk(
-            owner_id, dt_date.fromisoformat(window["date"]), window["slot"]
+            owner_id, walk_date, window["slot"]
         )
         active = db.start_walk(
             owner_id,
@@ -1287,6 +1310,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             recurring=False,
             future_assignments=assignments_for(future_plan),
             reminders_enabled=bool(person["reminders_enabled"]),
+            base_url=base_url,
         )
         if request.method == "HEAD":
             headers["Content-Length"] = str(len(ics.encode("utf-8")))

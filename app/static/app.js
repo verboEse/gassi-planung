@@ -14,12 +14,14 @@ const state = {
   badgeCatalog: null,
   badgeHistory: false,
   badgeDetail: null,
+  walkTarget: null,
 };
 
 let authMode = "login";
 let weekRequest = null;
 let groupWalkTarget = null;
 let takeoverApprovalTarget = null;
+let calendarWalkStartInFlight = false;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
@@ -47,6 +49,44 @@ function isoWeekOf(date) {
 function fmtDate(iso) {
   const [, m, d] = iso.split("-");
   return `${d}.${m}.`;
+}
+
+function parseWalkTarget(route) {
+  const match = /^walk\/(date|weekday)\/([^/]+)\/(morning|noon|evening)\/(\d+)$/.exec(route);
+  if (!match) return null;
+  const personId = Number(match[4]);
+  if (!Number.isSafeInteger(personId) || personId < 1) return null;
+  if (match[1] === "date") {
+    const date = new Date(`${match[2]}T00:00:00Z`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(match[2]) ||
+        Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== match[2]) {
+      return null;
+    }
+  } else if (!/^[1-7]$/.test(match[2])) {
+    return null;
+  }
+  return { mode: match[1], value: match[2], slot: match[3], personId };
+}
+
+async function startWalkFromCalendarLink(target) {
+  const params = new URLSearchParams({
+    person_id: String(target.personId),
+    slot: target.slot,
+    [target.mode]: target.value,
+  });
+  try {
+    const result = await api(`/api/walks/start?${params}`, { method: "POST" });
+    if (state.walkTarget === target) {
+      state.walkTarget = null;
+      history.replaceState(history.state, "", `${location.pathname}${location.search}`);
+    }
+    toast(result.created
+      ? `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`
+      : `Diese Gassi-Runde läuft bereits (${SLOT_LABELS[result.active.slot]})`);
+    await loadGamification();
+  } catch (error) {
+    toast(error.message);
+  }
 }
 
 async function api(path, options) {
@@ -778,6 +818,7 @@ function navigateApp(route) {
 
 function applyAppRoute() {
   const route = decodeURIComponent(location.hash.slice(1));
+  state.walkTarget = parseWalkTarget(route);
   const isProfile = route === "profile" || route === "history" || route.startsWith("badge/");
   document.getElementById("planView").hidden = isProfile;
   document.getElementById("profileView").hidden = !isProfile;
@@ -792,6 +833,12 @@ function applyAppRoute() {
   }
   if (detailId && state.me && state.badgeDetail?.id !== detailId) {
     loadBadgeDetail(detailId).catch(error => toast(error.message));
+  }
+  if (state.walkTarget && state.gamification && !calendarWalkStartInFlight) {
+    calendarWalkStartInFlight = true;
+    startWalkFromCalendarLink(state.walkTarget).finally(() => {
+      calendarWalkStartInFlight = false;
+    });
   }
 }
 
