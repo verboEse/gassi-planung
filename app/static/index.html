@@ -1,11 +1,13 @@
 <!doctype html>
 <html lang="de">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
   <link rel="stylesheet" href="/static/style.css?v=14">
 </head>
+
 <body>
   <header>
     <h1>🐕 Gassi-Planung</h1>
@@ -71,7 +73,8 @@
         <p class="hint">
           <strong>3</strong> = gehe ich gern · <strong>2</strong> = ok ·
           <strong>1</strong> = nur wenn nötig · <strong>🚫</strong> = nicht zu Hause ·
-          <strong>–</strong> = neutral (wie 2) · Änderungen gelten <strong>ab nächster Woche</strong>; aktueller Plan bleibt bis Sonntag fest
+          <strong>–</strong> = neutral (wie 2) · Änderungen gelten <strong>ab nächster Woche</strong>; aktueller Plan
+          bleibt bis Sonntag fest
         </p>
         <div id="editGrid" class="table-wrap"></div>
       </details>
@@ -125,7 +128,8 @@
         </form>
         <form id="adminPasswordForm" class="account-form">
           <label>Neues Passwort für den ausgewählten Teilnehmer (mindestens 12 Zeichen)
-            <input id="adminNewPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password" required>
+            <input id="adminNewPassword" type="password" minlength="12" maxlength="256" autocomplete="new-password"
+              required>
           </label>
           <button type="submit">Passwort zurücksetzen</button>
         </form>
@@ -148,7 +152,8 @@
           <label><input id="pushSetting" type="checkbox"> Push-Mitteilungen aktivieren</label>
           <label><input id="reminderSetting" type="checkbox"> Erinnerungen aktivieren</label>
           <p id="reminderDeliveryStatus" class="hint" role="status"></p>
-          <button type="button" id="removePushSubscriptionButton" class="secondary" hidden>Browser-Abo auf diesem Gerät entfernen</button>
+          <button type="button" id="removePushSubscriptionButton" class="secondary" hidden>Browser-Abo auf diesem Gerät
+            entfernen</button>
           <button type="submit">Einstellungen speichern</button>
         </form>
       </section>
@@ -205,8 +210,10 @@
     <h2 id="groupWalkTitle">Gemeinsame Runde bestätigen</h2>
     <p id="groupWalkMessage"></p>
     <div class="walk-controls">
-      <button id="groupWalkConfirmButton" class="secondary emoji-button" type="button" title="Gemeinsame Runde eintragen" aria-label="Gemeinsame Runde eintragen">✅</button>
-      <button id="groupWalkCancelButton" class="secondary emoji-button" type="button" title="Abbrechen" aria-label="Abbrechen">✖️</button>
+      <button id="groupWalkConfirmButton" class="secondary emoji-button" type="button"
+        title="Gemeinsame Runde eintragen" aria-label="Gemeinsame Runde eintragen">✅</button>
+      <button id="groupWalkCancelButton" class="secondary emoji-button" type="button" title="Abbrechen"
+        aria-label="Abbrechen">✖️</button>
     </div>
   </dialog>
   <div id="toast" class="toast" hidden></div>
@@ -214,10 +221,13 @@
     <h2 id="takeoverApprovalTitle">Übernahme freigeben?</h2>
     <p id="takeoverApprovalMessage"></p>
     <div class="walk-controls">
-      <button id="takeoverApprovalConfirmButton" class="secondary emoji-button" type="button" title="Übernahme freigeben" aria-label="Übernahme freigeben">✅</button>
-      <button id="takeoverApprovalCancelButton" class="secondary emoji-button" type="button" title="Abbrechen" aria-label="Abbrechen">✖️</button>
+      <button id="takeoverApprovalConfirmButton" class="secondary emoji-button" type="button"
+        title="Übernahme freigeben" aria-label="Übernahme freigeben">✅</button>
+      <button id="takeoverApprovalCancelButton" class="secondary emoji-button" type="button" title="Abbrechen"
+        aria-label="Abbrechen">✖️</button>
     </div>
   </dialog>
   <script src="/static/app.js?v=18"></script>
 </body>
+
 </html>
