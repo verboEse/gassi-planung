@@ -303,6 +303,7 @@ def test_avatar_format_detection_accepts_only_bounded_image_headers():
     jpeg = bytes.fromhex(
         "ffd8 ffc0 0011 08 0001 0001 03 011100 021100 031100 ffd9"
     )
+    malformed_jpeg = bytes.fromhex("ffd8ffc000020800010001ffd9")
     webp = (
         b"RIFF" + (22).to_bytes(4, "little") + b"WEBPVP8X"
         + (10).to_bytes(4, "little") + bytes(10)
@@ -311,6 +312,7 @@ def test_avatar_format_detection_accepts_only_bounded_image_headers():
     oversized_png[16:20] = (5000).to_bytes(4, "big")
     assert avatar_mime_type(png) == "image/png"
     assert avatar_mime_type(jpeg) == "image/jpeg"
+    assert avatar_mime_type(malformed_jpeg) is None
     assert avatar_mime_type(webp) == "image/webp"
     assert avatar_mime_type(bytes(oversized_png)) is None
     assert avatar_mime_type(b"<svg/>") is None
@@ -348,6 +350,14 @@ def test_profile_avatar_upload_is_validated_and_account_scoped(tmp_path, monkeyp
         assert client.put(
             "/api/profile/avatar", content=png, headers={"Content-Type": "image/jpeg"}
         ).status_code == 422
+        malformed_jpeg = bytes.fromhex("ffd8ffc000020800010001ffd9")
+        invalid_upload = client.put(
+            "/api/profile/avatar",
+            content=malformed_jpeg,
+            headers={"Content-Type": "image/jpeg"},
+        )
+        assert invalid_upload.status_code == 422
+        assert client.get("/api/profile/avatar").content == png
         too_large = client.put(
             "/api/profile/avatar",
             content=png + b"0" * (2 * 1024 * 1024),
