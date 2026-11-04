@@ -137,6 +137,11 @@ def avatar_mime_type(data: bytes) -> str | None:
             if segment_length < 2 or offset + segment_length > len(data):
                 return None
             if marker in {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}:
+                if segment_length < 8:
+                    return None
+                component_count = data[offset + 7]
+                if component_count == 0 or segment_length != 8 + 3 * component_count:
+                    return None
                 height = int.from_bytes(data[offset + 3:offset + 5], "big")
                 width = int.from_bytes(data[offset + 5:offset + 7], "big")
                 if 0 < width <= MAX_AVATAR_DIMENSION and 0 < height <= MAX_AVATAR_DIMENSION:
