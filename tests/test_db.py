@@ -4,6 +4,8 @@ from __future__ import annotations
 import sqlite3
 from datetime import datetime, timezone
 
+import pytest
+
 from app.db import Database
 
 OLD_SCHEMA = """
@@ -69,6 +71,45 @@ class TestMigration:
         db = Database(db_file)  # zweiter Start: keine Doppel-Migration
         assert db.prefs_all()[(1, "morning", 1)] == 1
 
+    def test_takeover_status_migration_preserves_requests(self, tmp_path):
+        db_file = tmp_path / "takeovers.sqlite3"
+        db = Database(db_file)
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+        with sqlite3.connect(db_file) as con:
+            con.execute("DROP INDEX IF EXISTS idx_active_walk_takeover_slot")
+            con.execute("DROP TABLE walk_takeover_requests")
+            con.execute("""
+                CREATE TABLE walk_takeover_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    walk_date TEXT NOT NULL,
+                    slot TEXT NOT NULL CHECK (slot IN ('morning', 'noon', 'evening')),
+                    requester_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    assignee_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    status TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'declined')),
+                    created_at TEXT NOT NULL,
+                    decided_at TEXT,
+                    CHECK (requester_id != assignee_id)
+                )
+            """)
+            con.execute(
+                """INSERT INTO walk_takeover_requests
+                   (walk_date, slot, requester_id, assignee_id, status, created_at)
+                   VALUES ('2026-10-12', 'morning', ?, ?, 'pending', '2026-10-12T06:00:00Z')""",
+                (laura["id"], jan["id"]),
+            )
+
+        db = Database(db_file)
+
+        assert db.list_walk_takeover_requests(jan["id"])[0]["status"] == "pending"
+        with sqlite3.connect(db_file) as con:
+            schema = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'walk_takeover_requests'"
+            ).fetchone()[0]
+        assert "'shared'" in schema
+
 
 class TestProfileSchema:
     def test_profile_fields_and_badge_seeds_on_existing_database(self, tmp_path):
@@ -99,7 +140,11 @@ class TestProfileSchema:
         } <= person_cols
         assert len(categories) == 6
         definition_ids = {row[0] for row in definitions}
-        assert {"first-walk", "ten-walks", "fifty-walks", "full-week"} <= definition_ids
+        assert {
+            "first-walk", "ten-walks", "fifty-walks", "full-week",
+            "first-shared-walk", "ten-shared-walks", "fifty-shared-walks",
+            "three-person-walk", "four-plus-walk",
+        } <= definition_ids
         seasonal_ids = {
             badge_id for badge_id in definition_ids if badge_id.endswith(tuple(map(str, range(2026, 2031))))
         }
@@ -214,6 +259,94 @@ class TestReminderOutbox:
             (jan["id"], "cancelled"),
             (laura["id"], "pending"),
         ]
+
+
+class TestWalkCoordination:
+    def test_existing_completions_gain_nullable_shared_reference(self, tmp_path):
+        path = tmp_path / "shared-walk-migration.sqlite3"
+        con = sqlite3.connect(path)
+        con.executescript(
+            """
+            CREATE TABLE persons (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                color TEXT NOT NULL DEFAULT '#4a90d9',
+                active INTEGER NOT NULL DEFAULT 1
+            );
+            INSERT INTO persons (id, name) VALUES (1, 'Jan');
+            CREATE TABLE walk_completions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                walk_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
+                created_at TEXT NOT NULL,
+                UNIQUE (person_id, walk_date, slot)
+            );
+            INSERT INTO walk_completions
+                (person_id, walk_date, slot, source, created_at)
+            VALUES (1, '2026-10-12', 'morning', 'plan', '2026-10-12T06:00:00+00:00');
+            """
+        )
+        con.commit()
+        con.close()
+
+        db = Database(path)
+        completion = db.list_walk_completions(1)[0]
+        assert completion["date"] == "2026-10-12"
+        assert completion["shared_walk_id"] is None
+        assert completion["shared_group_size"] == 0
+
+    def test_takeovers_allow_one_active_request_per_slot(self, tmp_path):
+        db = Database(tmp_path / "takeovers.sqlite3")
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+        max_person = db.add_person("Max")
+        created_at = "2026-10-12T06:00:00+00:00"
+
+        request = db.create_walk_takeover_request(
+            "2026-10-12", "morning", laura["id"], jan["id"], created_at
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.create_walk_takeover_request(
+                "2026-10-12", "morning", max_person["id"], jan["id"], created_at
+            )
+        declined = db.decide_walk_takeover_request(
+            request["id"], jan["id"], False, created_at
+        )
+        assert declined and declined["status"] == "declined"
+        assert not db.approved_walk_takeover(laura["id"], "2026-10-12", "morning")
+
+        request = db.create_walk_takeover_request(
+            "2026-10-12", "morning", max_person["id"], jan["id"], created_at
+        )
+        approved = db.decide_walk_takeover_request(
+            request["id"], jan["id"], True, created_at
+        )
+        assert approved and approved["status"] == "approved"
+        assert db.approved_walk_takeover(max_person["id"], "2026-10-12", "morning")
+        assert db.decide_walk_takeover_request(
+            request["id"], jan["id"], False, created_at
+        ) is None
+
+    def test_shared_walk_creates_one_completion_per_participant(self, tmp_path):
+        db = Database(tmp_path / "shared-walks.sqlite3")
+        people = [db.add_person(name) for name in ("Jan", "Laura", "Max")]
+        shared_walk = db.add_shared_walk_completions(
+            people[0]["id"], "2026-10-12", "morning", [p["id"] for p in people[1:]]
+        )
+        completions = shared_walk["completions"]
+
+        assert shared_walk["created"]
+        assert {row["person_id"] for row in completions} == {p["id"] for p in people}
+        assert len({row["shared_walk_id"] for row in completions}) == 1
+        assert all(row["shared_group_size"] == 3 for row in db.list_walk_completions())
+        duplicate = db.add_shared_walk_completions(
+            people[0]["id"], "2026-10-12", "morning", [p["id"] for p in people[1:]]
+        )
+        assert not duplicate["created"]
+        assert len(duplicate["completions"]) == 3
+        assert len(db.list_walk_completions()) == 3
 
 
 class TestWalkCompletions:

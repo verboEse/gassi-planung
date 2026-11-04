@@ -101,6 +101,98 @@ def test_auth_ownership_and_calendar_token_rotation(tmp_path, monkeypatch):
         assert client.get(urlsplit(new_url).path).status_code == 200
 
 
+def test_takeover_endpoints_require_authenticated_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 1))
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    secret = "test-session-secret-that-is-long-enough"
+    monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
+    db_path = tmp_path / "takeover-auth.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+
+    with TestClient(app, base_url="https://testserver") as client:
+        body = {"date": "2026-01-01", "slot": "morning"}
+        assert client.get("/api/walk-takeovers").status_code == 401
+        assert client.post("/api/walk-takeovers", json=body).status_code == 401
+        assert client.post("/api/walk-takeovers/1/group", json={}).status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        day = next(
+            item for item in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if item["date"] == "2026-01-01"
+        )
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": requester["name"],
+            "password": f"{requester['name'].lower()} family password",
+        }).status_code == 200
+        assert client.post("/api/walk-takeovers", json={
+            **body, "person_id": assignee["id"],
+        }).status_code == 403
+        requested = client.post("/api/walk-takeovers", json=body)
+        assert requested.status_code == 201, requested.text
+        request_id = requested.json()["request"]["id"]
+        assert client.post(f"/api/walk-takeovers/{request_id}/group", json={}).status_code == 403
+        assert client.put(f"/api/walk-takeovers/{request_id}", json={
+            "approved": True,
+        }).status_code == 404
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": assignee["name"],
+            "password": f"{assignee['name'].lower()} family password",
+        }).status_code == 200
+        assert client.put(f"/api/walk-takeovers/{request_id}", json={
+            "person_id": requester["id"], "approved": True,
+        }).status_code == 403
+        assert client.put(f"/api/walk-takeovers/{request_id}", json={
+            "approved": True,
+        }).status_code == 200
+
+
+def test_release_news_is_member_only_and_read_state_persists(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "release-news.sqlite3"
+    db = Database(db_path)
+    db.add_account("Jan", hash_password("jan family password"))
+    db.add_account("Admin", hash_password("admin family password"))
+    assert db.set_admin("Admin", True)
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.get("/api/news").status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        news = client.get("/api/news").json()["news"]
+        assert len(news) == 1
+        assert news[0]["version"] == "0.1.0"
+        assert client.post(f"/api/news/{news[0]['id']}/read").status_code == 204
+        assert client.get("/api/news").json()["news"] == []
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert client.get("/api/news").json()["news"] == []
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": "Admin", "password": "admin family password",
+        }).status_code == 200
+        assert client.get("/api/news").json()["news"] == []
+
+
 def test_push_subscription_endpoints_are_authenticated_and_owned(tmp_path, monkeypatch):
     secret = "test-session-secret-that-is-long-enough"
     monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
@@ -329,9 +421,11 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         current = client.get("/api/badges").json()
-        assert current["progress"]["available"] == 10
+        assert current["progress"]["available"] == 15
         current_ids = {badge["id"] for badge in current["badges"]}
         assert {
+            "first-shared-walk", "ten-shared-walks", "fifty-shared-walks",
+            "three-person-walk", "four-plus-walk",
             "st-nicholas-walk-2026", "winter-solstice-walk-2026",
             "new-year-walk-2027", "valentines-walk-2027",
             "spring-walk-2027", "earth-day-walk-2027",
@@ -345,7 +439,7 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
         assert one_off_badge["art_key"] == "heart-paws"
         category_ids = {category["id"] for category in current["categories"]}
         assert "loyalty-long-term" not in category_ids
-        assert "community-sharing" not in category_ids
+        assert "community-sharing" in category_ids
         history = client.get("/api/badges?history=true").json()
         assert len(history["badges"]) == 8
         valentines = next(
@@ -428,6 +522,93 @@ def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):
         assert "letzte Admin" in str(exc)
     else:
         raise AssertionError("must retain at least one admin")
+
+
+def test_admin_can_backfill_takeover_and_group_walks(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 10, 12, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "admin-completions.sqlite3"
+    db = Database(db_path)
+    admin = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    max_person = db.add_account("Max", hash_password("max family password"))
+    assert db.set_admin("Jan", True)
+    app = create_app(str(db_path))
+    takeover = {
+        "kind": "takeover",
+        "date": "2026-10-11",
+        "slot": "morning",
+        "person_ids": [laura["id"]],
+    }
+    normal = {
+        "kind": "normal",
+        "date": "2026-10-10",
+        "slot": "evening",
+        "person_ids": [max_person["id"]],
+    }
+    group = {
+        "kind": "group",
+        "date": "2026-10-12",
+        "slot": "noon",
+        "person_ids": [laura["id"], max_person["id"]],
+    }
+
+    with TestClient(app) as admin_client, TestClient(app) as user_client:
+        assert admin_client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert user_client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 200
+        assert user_client.post("/api/admin/completions", json=takeover).status_code == 403
+        assert admin_client.post("/api/admin/completions", json={
+            **takeover, "date": "2026-10-13",
+        }).status_code == 422
+
+        single = admin_client.post("/api/admin/completions", json=takeover)
+        assert single.status_code == 200, single.text
+        normal_result = admin_client.post("/api/admin/completions", json=normal)
+        assert normal_result.status_code == 200, normal_result.text
+        group_result = admin_client.post("/api/admin/completions", json=group)
+        assert group_result.status_code == 200, group_result.text
+
+        completions = admin_client.get("/api/gamification").json()["completions"]
+        single_row = next(
+            row for row in completions
+            if row["date"] == takeover["date"] and row["slot"] == takeover["slot"]
+        )
+        normal_row = next(
+            row for row in completions
+            if row["date"] == normal["date"] and row["slot"] == normal["slot"]
+        )
+        group_rows = [
+            row for row in completions
+            if row["date"] == group["date"] and row["slot"] == group["slot"]
+        ]
+        assert single_row["person_id"] == laura["id"]
+        assert single_row["source"] == "manual"
+        assert single_row["shared_walk_id"] is None
+        assert normal_row["person_id"] == max_person["id"]
+        assert normal_row["source"] == "manual"
+        assert normal_row["shared_walk_id"] is None
+        assert {row["person_id"] for row in group_rows} == set(group["person_ids"])
+        assert {row["source"] for row in group_rows} == {"manual"}
+        assert len({row["shared_walk_id"] for row in group_rows}) == 1
+        events = admin_client.get("/api/admin/activity").json()["events"]
+        assert any(
+            event["action"] == "walk_completion_add"
+            and event["details"]["kind"] == "group"
+            for event in events
+        )
+        assert any(
+            event["action"] == "walk_completion_add"
+            and event["details"]["kind"] == "normal"
+            for event in events
+        )
 
 
 def test_activity_history_expires_after_90_days(tmp_path):

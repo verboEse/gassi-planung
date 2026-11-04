@@ -29,22 +29,26 @@ Wochenplan** und stellt ihn als Tabelle dar.
   progressiv (10, 25, 45, 70, … Punkte). Runden werden nur im jeweiligen
   Zeitfenster mit 30 Minuten Toleranz gestartet; manuelle Runden laufen über
   „Jetzt Gassi gehen“ und „Gassi-Runde beenden“.
+- 🐾 Übernahme und gemeinsame Runden: Eine andere Person kann eine geplante Runde
+  mit Zustimmung übernehmen. Gemeinsam erfasste Runden zählen für jede beteiligte
+  Person und schalten gemeinsame Runden- sowie Gruppengrößen-Abzeichen frei.
 - 👤 Profil-Tab mit lokalem Avatar-Upload, Level, Abzeichenkatalog, saisonalem
   Rückblick und persönlichen Anzeige-/Erinnerungseinstellungen. Saisonabzeichen
   werden bis sechs Monate im Voraus gezeigt; noch nicht erreichte Abzeichen sind
   in Graustufen mit eigens gezeichneten, jahresspezifischen SVG-Siegeln dargestellt.
   Externe Avatar-Dienste werden nicht kontaktiert. Die Erinnerungseinstellung
-  steuert iCal-Alarme und Browser-Push; allgemeine Push-Mitteilungen sind nicht Teil
-  dieses Versands.
+  steuert iCal-Alarme und Browser-Push-Erinnerungen; die separate Push-Einstellung
+  steuert Benachrichtigungen zu Übernahmeanfragen und Entscheidungen.
 - 💾 Persistenz in SQLite (kein Setup nötig)
 
 ## Schnellstart
 
 ```bash
-python3 -m venv .venv
+brew install python@3.15
+"$(brew --prefix python@3.15)/bin/python3.15" -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8585
+python -m pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8585
 ```
 
 Dann im Browser öffnen: <http://localhost:8585>
@@ -216,32 +220,32 @@ pytest
 
 ## API (Auszug)
 
-| Methode | Pfad | Beschreibung |
-|---|---|---|
-| `GET` | `/api/week?year=2026&week=42` | Woche inkl. Personen, Prioritäten und berechnetem Plan |
-| `GET` | `/api/plan?year=…&week=…` | Nur der berechnete Plan |
-| `POST` | `/auth/register` | Konto mit Einladungscode erstellen |
-| `POST` | `/auth/login` | Mit Name und Passwort anmelden |
-| `GET` | `/api/persons` | Teilnehmer der Gruppe auflisten (angemeldet) |
-| `PUT` | `/api/prefs` | Eigene Priorität setzen: `weekday` (1=Mo…7=So), `slot`, `value` (`-1` blockiert, `1–3`, `null` löscht) |
-| `GET` | `/api/profile` | Eigenes Profil, Level, letzte Aktivität und Einstellungen anzeigen |
-| `PATCH` | `/api/profile/preferences` | Eigene Abzeichen-Sichtbarkeit und Push-/Erinnerungspräferenzen ändern |
-| `GET` | `/api/push/public-key` | Öffentlichen VAPID-Schlüssel für den eigenen Browser abrufen |
-| `POST` | `/api/push/subscriptions` | Eigenes Browser-Push-Abo registrieren |
-| `DELETE` | `/api/push/subscriptions` | Eigenes Browser-Push-Abo entfernen |
-| `PUT` | `/api/profile/avatar` | Eigenes PNG/JPEG/WebP-Profilbild hochladen (maximal 2 MiB) |
-| `GET` | `/api/profile/avatar` | Eigenes Profilbild geschützt abrufen |
-| `DELETE` | `/api/profile/avatar` | Eigenes Profilbild entfernen |
-| `GET` | `/api/badges` | Eigene Abzeichen, Kategorien und Fortschritt anzeigen; `?history=true` für vergangene Saisonabzeichen |
-| `GET` | `/api/badges/{badge_id}` | Abzeichenbedingung, Fortschritt und opt-in Teilnehmerliste anzeigen |
-| `GET` | `/api/badges/{badge_id}/participants/{person_id}/avatar` | Profilbild eines für dieses Abzeichen sichtbaren Teilnehmers geschützt abrufen |
-| `GET` | `/api/gamification` | Gruppenfortschritt, Abschlussstatus und eigene aktive Runde anzeigen |
-| `POST` | `/api/walks/start` | Gassi-Session im aktuellen Zeitfenster starten |
-| `POST` | `/api/walks/end` | Aktive Gassi-Session beenden und Abschluss speichern |
-| `PUT` | `/api/completions` | Zugewiesene eigene Planrunde im aktuellen Zeitfenster abschließen |
-| `DELETE` | `/api/completions/{date}/{slot}` | Eigenen Abschluss entfernen |
-| `GET` | `/api/calendar/{token}.ics` | Persönlicher iCal-Feed (Abo-Link ist widerrufbar) |
-| `POST` | `/api/me/calendar-token` | Persönlichen Kalender-Link erneuern |
+| Methode  | Pfad                                                     | Beschreibung                                                                                           |
+| -------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `GET`    | `/api/week?year=2026&week=42`                            | Woche inkl. Personen, Prioritäten und berechnetem Plan                                                 |
+| `GET`    | `/api/plan?year=…&week=…`                                | Nur der berechnete Plan                                                                                |
+| `POST`   | `/auth/register`                                         | Konto mit Einladungscode erstellen                                                                     |
+| `POST`   | `/auth/login`                                            | Mit Name und Passwort anmelden                                                                         |
+| `GET`    | `/api/persons`                                           | Teilnehmer der Gruppe auflisten (angemeldet)                                                           |
+| `PUT`    | `/api/prefs`                                             | Eigene Priorität setzen: `weekday` (1=Mo…7=So), `slot`, `value` (`-1` blockiert, `1–3`, `null` löscht) |
+| `GET`    | `/api/profile`                                           | Eigenes Profil, Level, letzte Aktivität und Einstellungen anzeigen                                     |
+| `PATCH`  | `/api/profile/preferences`                               | Eigene Abzeichen-Sichtbarkeit und Push-/Erinnerungspräferenzen ändern                                  |
+| `GET`    | `/api/push/public-key`                                   | Öffentlichen VAPID-Schlüssel für den eigenen Browser abrufen                                           |
+| `POST`   | `/api/push/subscriptions`                                | Eigenes Browser-Push-Abo registrieren                                                                  |
+| `DELETE` | `/api/push/subscriptions`                                | Eigenes Browser-Push-Abo entfernen                                                                     |
+| `PUT`    | `/api/profile/avatar`                                    | Eigenes PNG/JPEG/WebP-Profilbild hochladen (maximal 2 MiB)                                             |
+| `GET`    | `/api/profile/avatar`                                    | Eigenes Profilbild geschützt abrufen                                                                   |
+| `DELETE` | `/api/profile/avatar`                                    | Eigenes Profilbild entfernen                                                                           |
+| `GET`    | `/api/badges`                                            | Eigene Abzeichen, Kategorien und Fortschritt anzeigen; `?history=true` für vergangene Saisonabzeichen  |
+| `GET`    | `/api/badges/{badge_id}`                                 | Abzeichenbedingung, Fortschritt und opt-in Teilnehmerliste anzeigen                                    |
+| `GET`    | `/api/badges/{badge_id}/participants/{person_id}/avatar` | Profilbild eines für dieses Abzeichen sichtbaren Teilnehmers geschützt abrufen                         |
+| `GET`    | `/api/gamification`                                      | Gruppenfortschritt, Abschlussstatus und eigene aktive Runde anzeigen                                   |
+| `POST`   | `/api/walks/start`                                       | Gassi-Session im aktuellen Zeitfenster starten                                                         |
+| `POST`   | `/api/walks/end`                                         | Aktive Gassi-Session beenden und Abschluss speichern                                                   |
+| `PUT`    | `/api/completions`                                       | Zugewiesene eigene Planrunde im aktuellen Zeitfenster abschließen                                      |
+| `DELETE` | `/api/completions/{date}/{slot}`                         | Eigenen Abschluss entfernen                                                                            |
+| `GET`    | `/api/calendar/{token}.ics`                              | Persönlicher iCal-Feed (Abo-Link ist widerrufbar)                                                      |
+| `POST`   | `/api/me/calendar-token`                                 | Persönlichen Kalender-Link erneuern                                                                    |
 
 Profil-, Push-Abo- und Badge-Endpunkte benötigen eine Anmeldung und beziehen
 Profildaten nur für das eigene Konto. Avatarbilder werden lokal als PNG, JPEG oder

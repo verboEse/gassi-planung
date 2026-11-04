@@ -6,6 +6,7 @@ const state = {
   data: null,
   me: null,
   selectedPerson: null,
+  takeovers: [],
   adminData: null,
   adminUserId: null,
   gamification: null,
@@ -17,6 +18,8 @@ const state = {
 
 let authMode = "login";
 let weekRequest = null;
+let groupWalkTarget = null;
+let takeoverApprovalTarget = null;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
@@ -44,12 +47,6 @@ function isoWeekOf(date) {
 function fmtDate(iso) {
   const [, m, d] = iso.split("-");
   return `${d}.${m}.`;
-}
-
-function hasCompletion(date, slot, personId) {
-  return Boolean(state.gamification?.completions?.some(completion =>
-    completion.person_id === personId && completion.date === date && completion.slot === slot
-  ));
 }
 
 async function api(path, options) {
@@ -140,13 +137,23 @@ async function removeBrowserPushSubscription() {
 
 // ---------- Laden ------------------------------------------------------------
 
+async function loadTakeovers() {
+  const personId = state.me?.person.id ?? state.selectedPerson;
+  if (!personId) {
+    state.takeovers = [];
+    return;
+  }
+  const params = state.me ? "" : `?person_id=${personId}`;
+  state.takeovers = (await api(`/api/walk-takeovers${params}`)).requests;
+}
+
 async function loadWeek(force = false) {
   const params = state.year && state.week ? `?year=${state.year}&week=${state.week}` : "";
   if (weekRequest) {
     if (!force) return weekRequest;
     await weekRequest.catch(() => {});
   }
-  weekRequest = api(`/api/week${params}`).then(data => {
+  weekRequest = api(`/api/week${params}`).then(async data => {
     state.data = data;
     state.year = data.year;
     state.week = data.week;
@@ -155,6 +162,7 @@ async function loadWeek(force = false) {
     } else if (!data.persons.some(p => p.id === state.selectedPerson)) {
       state.selectedPerson = data.persons.length ? data.persons[0].id : null;
     }
+    await loadTakeovers();
     renderAll();
   }).finally(() => { weekRequest = null; });
   return weekRequest;
@@ -190,6 +198,7 @@ function renderPlan() {
     return;
   }
   const label = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
+  const viewerId = state.me?.person.id ?? state.selectedPerson;
   let html = `<table><thead><tr><th>Tag</th>${SLOT_KEYS.map(s => `<th>${label[s]}</th>`).join("")}</tr></thead><tbody>`;
   for (const day of plan.days) {
     const weekend = day.weekday === "Sa" || day.weekday === "So" ? " class=\"weekend\"" : "";
@@ -198,23 +207,54 @@ function renderPlan() {
       const cell = day.slots[s];
       if (cell.unassigned) {
         html += `<td class="unassigned">⚠️ frei</td>`;
-      } else {
-        const completed = hasCompletion(day.date, s, cell.person_id);
-        const isMine = state.me?.person.id === cell.person_id;
-        const window = state.gamification?.walk_status?.window;
-        const active = state.gamification?.walk_status?.active;
-        const canToggle = completed || (
-          isMine && !active && window?.date === day.date && window?.slot === s
-        );
-        if (isMine && canToggle) {
-          html += `<td><button type="button" class="assignee walk-toggle${completed ? " done" : ""}" style="background:${cell.color}" data-walk-date="${day.date}" data-walk-slot="${s}" title="${completed ? "Erledigt" : "Als erledigt markieren"}" aria-label="${cell.name}: ${completed ? "erledigt" : "als erledigt markieren"}">${cell.name}${completed ? " ✓" : ""}</button></td>`;
-        } else {
-          const marker = completed
-            ? '<span class="completion-mark" title="Erledigt" aria-label="Erledigt">✓</span>'
-            : "";
-          html += `<td><span class="assignee" style="background:${cell.color}">${cell.name}${marker}</span></td>`;
-        }
+        continue;
       }
+      const slotRequests = state.takeovers.filter(request =>
+        request.walk_date === day.date && request.slot === s
+      );
+      const outgoing = slotRequests.find(request => request.requester_id === viewerId);
+      const incoming = slotRequests.find(request => request.assignee_id === viewerId);
+      const pendingIncoming = incoming?.status === "pending";
+      const pending = slotRequests.some(request =>
+        request.status === "pending" || request.status === "approved"
+      );
+      const approvedForViewer = outgoing?.status === "approved";
+      const approvedForOther = incoming?.status === "approved";
+      const slotCompletions = state.gamification?.completions.filter(completion =>
+        completion.date === day.date && completion.slot === s
+      ) || [];
+      const completed = slotCompletions.length > 0;
+      const sharedWalk = slotCompletions.find(completion => completion.shared_walk_id);
+      const isMine = viewerId === cell.person_id;
+      const window = state.gamification?.walk_status?.window;
+      const active = state.gamification?.walk_status?.active;
+      const isCurrentSlot = window?.date === day.date && window?.slot === s;
+      const canComplete = (isMine && !approvedForOther && !pendingIncoming) || approvedForViewer;
+      const canToggle = canComplete && (completed || (!active && isCurrentSlot));
+      const shownName = approvedForViewer
+        ? persons.find(person => person.id === viewerId)?.name || cell.name
+        : cell.name;
+      const marker = completed
+        ? sharedWalk
+          ? `<span class="completion-mark" title="Gemeinsam mit ${sharedWalk.shared_group_size} Teilnehmenden" aria-label="Gemeinsam mit ${sharedWalk.shared_group_size} Teilnehmenden">✓ gemeinsam (${sharedWalk.shared_group_size})</span>`
+          : '<span class="completion-mark" title="Erledigt" aria-label="Erledigt">✓</span>'
+        : "";
+      const assignee = canToggle
+        ? `<button type="button" class="assignee walk-toggle${completed ? " done" : ""}" style="background:${cell.color}" data-walk-date="${day.date}" data-walk-slot="${s}" title="${completed ? "Erledigt" : "Als erledigt markieren"}" aria-label="${shownName}: ${completed ? "erledigt" : "als erledigt markieren"}">${shownName}${marker}</button>`
+        : `<span class="assignee" style="background:${cell.color}">${cell.name}${marker}</span>`;
+      let controls = "";
+      if (pendingIncoming) {
+        controls = `<div class="walk-controls"><button type="button" class="secondary emoji-button takeover-decision" data-request-id="${incoming.id}" data-approved="true" title="Übernahme freigeben" aria-label="Übernahme freigeben">✅</button><button type="button" class="secondary emoji-button takeover-decision" data-request-id="${incoming.id}" data-approved="false" title="Ich gehe selbst" aria-label="Ich gehe selbst">🐕</button><button type="button" class="secondary emoji-button group-walk-decision" data-request-id="${incoming.id}" data-requester-id="${incoming.requester_id}" data-walk-date="${day.date}" data-walk-slot="${s}" title="Gemeinsame Runde bestätigen" aria-label="Gemeinsame Runde bestätigen">👥</button></div>`;
+      } else if (incoming?.status === "shared" || outgoing?.status === "shared") {
+        controls = '<small class="walk-request-status">Gemeinsame Runde bestätigt</small>';
+      } else if (outgoing?.status === "pending") {
+        controls = '<small class="walk-request-status">Anfrage läuft</small>';
+      } else if (outgoing?.status === "approved") {
+        controls = '<small class="walk-request-status">Übernahme freigegeben</small>';
+      } else if (outgoing?.status === "declined") {
+        controls = '<small class="walk-request-status">Anfrage abgelehnt</small>';
+      }
+      html += `<td><div class="plan-cell">${assignee}${controls}</div></td>`;
     }
     html += "</tr>";
   }
@@ -225,6 +265,21 @@ function renderPlan() {
       button.dataset.walkSlot,
       button.classList.contains("done"),
     ).catch(e => toast(e.message));
+  });
+  wrap.querySelectorAll(".takeover-decision").forEach(button => {
+    const requestId = Number(button.dataset.requestId);
+    const approved = button.dataset.approved === "true";
+    button.onclick = () => approved
+      ? openTakeoverApprovalDialog(requestId)
+      : decideTakeover(requestId, false).catch(e => toast(e.message));
+  });
+  wrap.querySelectorAll(".group-walk-decision").forEach(button => {
+    button.onclick = () => openGroupWalkDialog(
+      Number(button.dataset.requestId),
+      Number(button.dataset.requesterId),
+      button.dataset.walkDate,
+      button.dataset.walkSlot,
+    );
   });
 }
 
@@ -256,13 +311,23 @@ function renderGamification() {
     ? `Du: ${me.points} Punkte · Level ${me.level}`
     : "Fortschritt der Gruppe";
   const walkStatus = state.gamification.walk_status;
+  const walkWindow = walkStatus.window;
+  const ownTakeover = walkWindow && state.takeovers.find(request =>
+    request.walk_date === walkWindow.date &&
+    request.slot === walkWindow.slot &&
+    request.requester_id === state.me?.person.id
+  );
+  const awaitingTakeover = ownTakeover?.status === "pending";
   sessionButton.hidden = !state.me;
-  sessionButton.disabled = Boolean(state.me) && !walkStatus.active && !walkStatus.can_start;
-  sessionButton.textContent = walkStatus.active ? "Gassi-Runde beenden" : "Jetzt Gassi gehen";
+  sessionButton.disabled = Boolean(state.me) && !walkStatus.active &&
+    (!walkStatus.can_start || !walkStatus.assignee_id || awaitingTakeover);
+  sessionButton.textContent = walkStatus.active
+    ? "Gassi-Runde beenden"
+    : awaitingTakeover ? "Anfrage läuft" : "Jetzt Gassi gehen";
   sessionHint.textContent = walkStatus.active
     ? `Gestartet: ${SLOT_LABELS[walkStatus.active.slot]}`
-    : walkStatus.window
-      ? `Aktuelles Zeitfenster: ${SLOT_LABELS[walkStatus.window.slot]}`
+    : walkWindow
+      ? `Aktuelles Zeitfenster: ${SLOT_LABELS[walkWindow.slot]}`
       : "Start nur im jeweiligen Zeitfenster mit 30 Minuten Toleranz möglich.";
   people.replaceChildren();
   for (const person of state.gamification.persons) {
@@ -315,21 +380,95 @@ async function loadGamification() {
   if (state.badgeCatalog) await loadBadgeCatalog(state.badgeHistory);
 }
 
+async function requestTakeover(date, slot) {
+  const body = { date, slot };
+  if (!state.me) body.person_id = state.selectedPerson;
+  await api("/api/walk-takeovers", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  toast("Übernahmeanfrage gesendet");
+  await loadWeek(true);
+}
+
+async function decideTakeover(requestId, approved) {
+  const body = { approved };
+  if (!state.me) body.person_id = state.selectedPerson;
+  await api(`/api/walk-takeovers/${requestId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  toast(approved ? "Übernahme freigegeben" : "Du nimmst die Runde selbst wahr");
+  await loadWeek(true);
+}
+
+function openTakeoverApprovalDialog(requestId) {
+  const request = state.takeovers.find(item => item.id === requestId);
+  if (!request) return;
+  const requester = state.data.persons.find(person => person.id === request.requester_id);
+  takeoverApprovalTarget = requestId;
+  document.getElementById("takeoverApprovalMessage").textContent =
+    `${requester?.name || "Die anfragende Person"} darf die Runde ${SLOT_LABELS[request.slot]} am ${fmtDate(request.walk_date)} übernehmen. Möchtest du die Übernahme freigeben?`;
+  document.getElementById("takeoverApprovalDialog").showModal();
+}
+
+async function confirmTakeoverApproval() {
+  if (takeoverApprovalTarget === null) return;
+  const requestId = takeoverApprovalTarget;
+  document.getElementById("takeoverApprovalDialog").close();
+  try {
+    await decideTakeover(requestId, true);
+  } catch (error) { toast(error.message); }
+}
+
+function openGroupWalkDialog(requestId, requesterId, date, slot) {
+  groupWalkTarget = { requestId };
+  const requester = state.data.persons.find(person => person.id === requesterId);
+  document.getElementById("groupWalkMessage").textContent =
+    `Die Runde ${SLOT_LABELS[slot]} am ${fmtDate(date)} für dich und ${requester?.name || "die anfragende Person"} als gemeinsam erledigt eintragen?`;
+  document.getElementById("groupWalkDialog").showModal();
+}
+
+async function confirmGroupWalk() {
+  if (!groupWalkTarget) return;
+  const { requestId } = groupWalkTarget;
+  const body = {};
+  if (!state.me) body.person_id = state.selectedPerson;
+  try {
+    await api(`/api/walk-takeovers/${requestId}/group`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    document.getElementById("groupWalkDialog").close();
+    toast("Gemeinsame Runde bestätigt");
+    await loadGamification();
+    await loadWeek(true);
+  } catch (error) { toast(error.message); }
+}
+
 async function toggleCompletion(date, slot, completed) {
   if (completed) {
-    await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
+    const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
+    await api(`/api/completions/${date}/${slot}${personId}`, { method: "DELETE" });
   } else {
+    const body = { date, slot, source: "plan" };
+    if (!state.me) body.person_id = state.selectedPerson;
     await api("/api/completions", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ date, slot, source: "plan" }),
+      body: JSON.stringify(body),
     });
   }
   await loadGamification();
+  await loadWeek(true);
 }
 
 async function removeCompletion(date, slot) {
-  await api(`/api/completions/${date}/${slot}`, { method: "DELETE" });
+  const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
+  await api(`/api/completions/${date}/${slot}${personId}`, { method: "DELETE" });
   await loadGamification();
 }
 
@@ -670,7 +809,14 @@ function renderTabs() {
     btn.textContent = p.name;
     if (p.id === state.selectedPerson) btn.style.background = p.color;
     btn.style.borderColor = p.color;
-    btn.onclick = () => { state.selectedPerson = p.id; renderTabs(); renderGrid(); renderCalLink(); };
+    btn.onclick = async () => {
+      state.selectedPerson = p.id;
+      await loadTakeovers();
+      renderTabs();
+      renderPlan();
+      renderGrid();
+      renderCalLink();
+    };
     el.appendChild(btn);
   }
 }
@@ -817,7 +963,49 @@ function renderAdminUsers() {
   }
   if (state.adminUserId !== null) select.value = String(state.adminUserId);
   select.disabled = !users.length;
+  renderAdminCompletionPeople(users);
+  renderAdminCompletionKind();
+  setAdminCompletionDateBounds();
   renderAdminPrefs();
+}
+
+function renderAdminCompletionPeople(users) {
+  const takeoverSelect = document.getElementById("adminTakeoverPerson");
+  const groupSelect = document.getElementById("adminGroupPeople");
+  for (const select of [takeoverSelect, groupSelect]) {
+    select.replaceChildren();
+    for (const user of users) {
+      const option = document.createElement("option");
+      option.value = user.id;
+      option.textContent = user.name;
+      select.appendChild(option);
+    }
+  }
+  if (state.adminUserId !== null) takeoverSelect.value = String(state.adminUserId);
+}
+
+function renderAdminCompletionKind() {
+  const kind = document.getElementById("adminCompletionKind").value;
+  const isGroup = kind === "group";
+  const takeoverLabel = document.getElementById("adminTakeoverPersonLabel");
+  const takeoverSelect = document.getElementById("adminTakeoverPerson");
+  const groupLabel = document.getElementById("adminGroupPeopleLabel");
+  const groupSelect = document.getElementById("adminGroupPeople");
+  document.getElementById("adminSinglePersonLabel").textContent =
+    kind === "normal" ? "Teilnehmer" : "Übernehmende Person";
+  takeoverLabel.hidden = isGroup;
+  takeoverSelect.disabled = isGroup || !takeoverSelect.options.length;
+  groupLabel.hidden = !isGroup;
+  groupSelect.disabled = !isGroup || !groupSelect.options.length;
+}
+
+function setAdminCompletionDateBounds() {
+  const input = document.getElementById("adminCompletionDate");
+  const now = new Date();
+  now.setMinutes(now.getMinutes() - now.getTimezoneOffset());
+  const today = now.toISOString().slice(0, 10);
+  input.max = today;
+  if (!input.value) input.value = today;
 }
 
 function renderAdminPrefs() {
@@ -877,11 +1065,24 @@ function renderAdminActivity(events) {
   for (const event of events) {
     const row = body.insertRow();
     row.insertCell().textContent = new Date(event.occurred_at).toLocaleString("de-DE");
-    row.insertCell().textContent = event.action === "login" ? "Anmeldung" : "Präferenz geändert";
+    row.insertCell().textContent = event.action === "login"
+      ? "Anmeldung"
+      : event.action === "preference_change"
+        ? "Präferenz geändert"
+        : "Gassirunde nachgetragen";
     row.insertCell().textContent = event.subject;
-    const details = event.action === "login"
-      ? `Anmeldung von ${event.actor}`
-      : `${event.actor}: ${dayNames[event.details.weekday - 1]} ${slotNames[event.details.slot]} (${event.details.old_value ?? "–"} → ${event.details.new_value ?? "–"})`;
+    let details;
+    if (event.action === "login") {
+      details = `Anmeldung von ${event.actor}`;
+    } else if (event.action === "preference_change") {
+      details = `${event.actor}: ${dayNames[event.details.weekday - 1]} ${slotNames[event.details.slot]} (${event.details.old_value ?? "–"} → ${event.details.new_value ?? "–"})`;
+    } else {
+      const kind = event.details.kind === "group"
+        ? "Gruppenrunde"
+        : event.details.kind === "normal" ? "Normale Runde" : "Übernommene Runde";
+      const date = new Date(`${event.details.date}T00:00:00`).toLocaleDateString("de-DE");
+      details = `${event.actor}: ${kind} · ${date} · ${slotNames[event.details.slot]} (${event.details.participants.join(", ")})`;
+    }
     row.insertCell().textContent = details;
   }
   wrap.appendChild(table);
@@ -893,6 +1094,39 @@ async function refreshAdminActivity() {
     const activity = await api("/api/admin/activity");
     renderAdminActivity(activity.events);
   } catch (e) { toast(e.message); }
+}
+
+async function submitAdminCompletion(event) {
+  event.preventDefault();
+  const kind = document.getElementById("adminCompletionKind").value;
+  const personIds = kind === "group"
+    ? [...document.getElementById("adminGroupPeople").selectedOptions].map(option => Number(option.value))
+    : [Number(document.getElementById("adminTakeoverPerson").value)];
+  if (kind === "group" && personIds.length < 2) {
+    toast("Wähle mindestens zwei Teilnehmende für die Gruppenrunde aus.");
+    return;
+  }
+  try {
+    const result = await api("/api/admin/completions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kind,
+        date: document.getElementById("adminCompletionDate").value,
+        slot: document.getElementById("adminCompletionSlot").value,
+        person_ids: personIds,
+      }),
+    });
+    toast(result.created
+      ? kind === "group"
+        ? "Gruppenrunde nachgetragen"
+        : kind === "normal" ? "Normale Runde nachgetragen" : "Übernommene Runde nachgetragen"
+      : "Für diese Runde gab es bereits einen Eintrag.");
+    document.getElementById("adminGroupPeople").selectedIndex = -1;
+    await loadGamification();
+    await loadWeek(true);
+    await refreshAdminActivity();
+  } catch (error) { toast(error.message); }
 }
 
 async function loadAdminPanel() {
@@ -992,30 +1226,38 @@ document.getElementById("profilePreferencesForm").onsubmit = async (event) => {
   event.preventDefault();
   try {
     const remindersEnabled = document.getElementById("reminderSetting").checked;
-    const browserPushStatus = remindersEnabled ? await enableBrowserPush() : null;
+    const pushEnabled = document.getElementById("pushSetting").checked;
+    const browserPushStatus = remindersEnabled || pushEnabled ? await enableBrowserPush() : null;
     state.profile = await api("/api/profile/preferences", {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         badge_visibility: document.getElementById("badgeVisibilitySetting").checked,
-        push_enabled: document.getElementById("pushSetting").checked,
+        push_enabled: pushEnabled,
         reminders_enabled: remindersEnabled,
       }),
     });
     renderProfile();
-    if (!remindersEnabled) {
-      toast("Profileinstellungen gespeichert; Erinnerungen deaktiviert");
-    } else if (browserPushStatus === "enabled") {
+    if (browserPushStatus === "enabled") {
+      const uses = [
+        remindersEnabled && "Erinnerungen",
+        pushEnabled && "Übernahmeanfragen",
+      ].filter(Boolean).join(" und ");
       document.getElementById("reminderDeliveryStatus").textContent =
-        "Kalenderalarm und Browser-Push sind für diesen Browser aktiv.";
+        `Browser-Push für ${uses} ist auf diesem Gerät aktiv.`;
       toast("Profileinstellungen gespeichert; Browser-Push aktiviert");
-    } else {
+    } else if (browserPushStatus) {
       const reason = browserPushStatus === "denied"
         ? "Browser-Berechtigung fehlt"
         : "Browser-Push ist auf diesem Gerät nicht verfügbar";
+      document.getElementById("reminderDeliveryStatus").textContent = remindersEnabled
+        ? `iCal-Alarm bleibt verfügbar; ${reason}.`
+        : `Übernahmeanfragen werden nicht als Browser-Push zugestellt; ${reason}.`;
+      toast(`Profileinstellungen gespeichert; ${reason}`);
+    } else {
       document.getElementById("reminderDeliveryStatus").textContent =
-        `iCal-Alarm ist aktiv; ${reason}.`;
-      toast(`Erinnerung gespeichert; ${reason}`);
+        "Erinnerungen und Push-Mitteilungen sind deaktiviert.";
+      toast("Profileinstellungen gespeichert");
     }
   } catch (error) { toast(error.message); }
 };
@@ -1075,8 +1317,27 @@ document.getElementById("addPersonForm").onsubmit = async (ev) => {
 };
 
 document.getElementById("walkSessionButton").onclick = async () => {
-  const active = state.gamification?.walk_status?.active;
+  const walkStatus = state.gamification?.walk_status;
+  const active = walkStatus?.active;
   try {
+    if (!active) {
+      const walkWindow = walkStatus?.window;
+      if (!walkWindow || !walkStatus.can_start) return;
+      if (!walkStatus.assignee_id) {
+        toast("Für diese Runde ist keine Person eingetragen");
+        return;
+      }
+      const ownTakeover = state.takeovers.find(request =>
+        request.walk_date === walkWindow.date &&
+        request.slot === walkWindow.slot &&
+        request.requester_id === state.me?.person.id
+      );
+      if (ownTakeover?.status === "pending") return;
+      if (walkStatus.assignee_id !== state.me?.person.id && ownTakeover?.status !== "approved") {
+        await requestTakeover(walkWindow.date, walkWindow.slot);
+        return;
+      }
+    }
     const result = await api(active ? "/api/walks/end" : "/api/walks/start", {
       method: "POST",
     });
@@ -1084,6 +1345,20 @@ document.getElementById("walkSessionButton").onclick = async () => {
     await loadGamification();
   } catch (e) { toast(e.message); }
 };
+document.getElementById("groupWalkConfirmButton").onclick = confirmGroupWalk;
+document.getElementById("groupWalkCancelButton").onclick = () => {
+  document.getElementById("groupWalkDialog").close();
+};
+document.getElementById("groupWalkDialog").addEventListener("close", () => {
+  groupWalkTarget = null;
+});
+document.getElementById("takeoverApprovalConfirmButton").onclick = confirmTakeoverApproval;
+document.getElementById("takeoverApprovalCancelButton").onclick = () => {
+  document.getElementById("takeoverApprovalDialog").close();
+};
+document.getElementById("takeoverApprovalDialog").addEventListener("close", () => {
+  takeoverApprovalTarget = null;
+});
 
 function setAuthMode(mode) {
   authMode = mode;
@@ -1122,8 +1397,11 @@ document.getElementById("authForm").onsubmit = async (ev) => {
 
 document.getElementById("adminUserSelect").onchange = (ev) => {
   state.adminUserId = Number(ev.target.value);
+  document.getElementById("adminTakeoverPerson").value = String(state.adminUserId);
   renderAdminPrefs();
 };
+document.getElementById("adminCompletionKind").onchange = renderAdminCompletionKind;
+document.getElementById("adminCompletionForm").onsubmit = submitAdminCompletion;
 document.getElementById("refreshActivity").onclick = () => refreshAdminActivity();
 document.getElementById("adminPasswordForm").onsubmit = async (ev) => {
   ev.preventDefault();
@@ -1164,6 +1442,49 @@ document.getElementById("logoutBtn").onclick = async () => {
   } catch (e) { toast(e.message); }
 };
 
+document.getElementById("newsLaterButton").onclick = () => {
+  document.getElementById("newsDialog").close();
+};
+
+async function loadNews() {
+  if (!state.me || state.me.person.is_admin) return;
+  try {
+    const { news } = await api("/api/news");
+    if (!news.length) return;
+    const dialog = document.getElementById("newsDialog");
+    const container = document.getElementById("newsItems");
+    container.replaceChildren();
+    for (const item of news) {
+      const article = document.createElement("article");
+      article.className = "news-item";
+      const title = document.createElement("h3");
+      title.textContent = item.title;
+      const version = document.createElement("p");
+      version.className = "news-version";
+      version.textContent = `Version ${item.version}`;
+      const body = document.createElement("p");
+      body.textContent = item.body;
+      const readButton = document.createElement("button");
+      readButton.type = "button";
+      readButton.textContent = "Als gelesen markieren";
+      readButton.onclick = async () => {
+        readButton.disabled = true;
+        try {
+          await api(`/api/news/${encodeURIComponent(item.id)}/read`, { method: "POST" });
+          article.remove();
+          if (!container.childElementCount) dialog.close();
+        } catch (error) {
+          readButton.disabled = false;
+          toast(error.message);
+        }
+      };
+      article.append(title, version, body, readButton);
+      container.append(article);
+    }
+    dialog.showModal();
+  } catch (error) { toast(error.message); }
+}
+
 async function initialize() {
   const auth = document.getElementById("authSection");
   const content = document.getElementById("appContent");
@@ -1199,7 +1520,10 @@ async function initialize() {
   loadWeek()
     .then(async () => {
       await loadGamification();
-      if (state.me) await loadProfile();
+      if (state.me) {
+        await loadProfile();
+        await loadNews();
+      }
       applyAppRoute();
     })
     .catch(e => toast(e.message));

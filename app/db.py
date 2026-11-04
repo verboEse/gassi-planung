@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS activity_log (
 )
 """
 
+NEWS_READS_DDL = """
+CREATE TABLE IF NOT EXISTS news_reads (
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    news_id TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (person_id, news_id)
+)
+"""
+
 WEEKLY_PLANS_DDL = """
 CREATE TABLE IF NOT EXISTS weekly_plans (
     year INTEGER NOT NULL,
@@ -54,6 +63,38 @@ CREATE TABLE IF NOT EXISTS weekly_plans (
     plan_json TEXT NOT NULL,
     PRIMARY KEY (year, week)
 )
+"""
+
+SHARED_WALKS_DDL = """
+CREATE TABLE IF NOT EXISTS shared_walks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL CHECK (slot IN ('morning', 'noon', 'evening')),
+    created_by INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    UNIQUE (walk_date, slot)
+)
+"""
+
+WALK_TAKEOVER_REQUESTS_DDL = """
+CREATE TABLE IF NOT EXISTS walk_takeover_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    walk_date TEXT NOT NULL,
+    slot TEXT NOT NULL CHECK (slot IN ('morning', 'noon', 'evening')),
+    requester_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    assignee_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'approved', 'declined', 'shared')),
+    created_at TEXT NOT NULL,
+    decided_at TEXT,
+    CHECK (requester_id != assignee_id)
+)
+"""
+
+ACTIVE_WALK_TAKEOVER_INDEX_DDL = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_walk_takeover_slot
+ON walk_takeover_requests (walk_date, slot)
+WHERE status IN ('pending', 'approved')
 """
 
 WALK_COMPLETIONS_DDL = """
@@ -64,6 +105,7 @@ CREATE TABLE IF NOT EXISTS walk_completions (
     slot TEXT NOT NULL,
     source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
     created_at TEXT NOT NULL,
+    shared_walk_id INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL,
     UNIQUE (person_id, walk_date, slot)
 )
 """
@@ -187,6 +229,11 @@ BADGE_SEEDS = [
     ("ten-walks", "walk-milestones", "10 Runden", "Erledige zehn Gassirunden.", "completion-count", '{"source":"any"}', 10, None, None, "current-count", "bronze-medal"),
     ("fifty-walks", "walk-milestones", "50 Runden", "Erledige fünfzig Gassirunden.", "completion-count", '{"source":"any"}', 50, None, None, "current-count", "gold-medal"),
     ("full-week", "streaks-habits", "Volle Woche", "Erledige mindestens eine Runde an jedem Tag einer ISO-Kalenderwoche.", "full-iso-week", '{}', 7, None, None, "historical", "seven-paws"),
+    ("first-shared-walk", "community-sharing", "Gemeinsam gestartet", "Erledige deine erste gemeinsame Gassirunde.", "shared-walk-count", '{}', 1, None, None, "current-count", "heart-paws"),
+    ("ten-shared-walks", "community-sharing", "Teamgeist 10", "Erledige zehn gemeinsame Gassirunden.", "shared-walk-count", '{}', 10, None, None, "current-count", "bronze-medal"),
+    ("fifty-shared-walks", "community-sharing", "Teamgeist 50", "Erledige fünfzig gemeinsame Gassirunden.", "shared-walk-count", '{}', 50, None, None, "current-count", "gold-medal"),
+    ("three-person-walk", "community-sharing", "Zu dritt unterwegs", "Geh eine Runde mit genau drei Teilnehmenden.", "group-size", '{"size":3}', 1, None, None, "current-count", "heart-paws"),
+    ("four-plus-walk", "community-sharing", "Große Gassi-Gruppe", "Geh eine Runde mit mindestens vier Teilnehmenden.", "group-size", '{"minimum_size":4}', 1, None, None, "current-count", "heart-paws"),
 ]
 
 SEASONAL_EVENT_SEEDS = [
@@ -272,8 +319,36 @@ class Database:
                 if "auth_version" not in account_cols:
                     con.execute("ALTER TABLE accounts ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
             con.execute(ACTIVITY_DDL)
+            con.execute(NEWS_READS_DDL)
             con.execute(WEEKLY_PLANS_DDL)
+            con.execute(SHARED_WALKS_DDL)
+            con.execute(WALK_TAKEOVER_REQUESTS_DDL)
+            takeover_schema = con.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' "
+                "AND name = 'walk_takeover_requests'"
+            ).fetchone()
+            if takeover_schema and "'shared'" not in takeover_schema["sql"]:
+                con.execute("DROP INDEX IF EXISTS idx_active_walk_takeover_slot")
+                con.execute(
+                    "ALTER TABLE walk_takeover_requests "
+                    "RENAME TO walk_takeover_requests_old"
+                )
+                con.execute(WALK_TAKEOVER_REQUESTS_DDL)
+                con.execute(
+                    """INSERT INTO walk_takeover_requests
+                       (id, walk_date, slot, requester_id, assignee_id, status, created_at, decided_at)
+                       SELECT id, walk_date, slot, requester_id, assignee_id, status, created_at, decided_at
+                       FROM walk_takeover_requests_old"""
+                )
+                con.execute("DROP TABLE walk_takeover_requests_old")
+            con.execute(ACTIVE_WALK_TAKEOVER_INDEX_DDL)
             con.execute(WALK_COMPLETIONS_DDL)
+            completion_cols = {row[1] for row in con.execute("PRAGMA table_info(walk_completions)")}
+            if "shared_walk_id" not in completion_cols:
+                con.execute(
+                    "ALTER TABLE walk_completions ADD COLUMN shared_walk_id "
+                    "INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL"
+                )
             con.execute(WALK_COMPLETIONS_INDEX_DDL)
             con.execute(ACTIVE_WALKS_DDL)
             con.execute(PUSH_SUBSCRIPTIONS_DDL)
@@ -548,6 +623,14 @@ class Database:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def push_enabled(self, person_id: int) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT push_enabled FROM persons WHERE id = ? AND active = 1",
+                (person_id,),
+            ).fetchone()
+        return bool(row and row[0])
+
     def delete_push_subscription(self, person_id: int, endpoint: str) -> bool:
         with self._connect() as con:
             cur = con.execute(
@@ -786,6 +869,26 @@ class Database:
             )
         return True
 
+    def news_read_ids(self, person_id: int) -> set[str]:
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT news_id FROM news_reads WHERE person_id = ?",
+                (person_id,),
+            ).fetchall()
+        return {row["news_id"] for row in rows}
+
+    def mark_news_read(self, person_id: int, news_id: str) -> None:
+        read_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO news_reads (person_id, news_id, read_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (person_id, news_id) DO NOTHING
+                """,
+                (person_id, news_id, read_at),
+            )
+
     def record_activity(
         self,
         actor_username: str,
@@ -898,6 +1001,108 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def create_walk_takeover_request(
+        self,
+        walk_date: str,
+        slot: str,
+        requester_id: int,
+        assignee_id: int,
+        created_at: str,
+    ) -> dict:
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            cur = con.execute(
+                """
+                INSERT INTO walk_takeover_requests
+                    (walk_date, slot, requester_id, assignee_id, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (walk_date, slot, requester_id, assignee_id, created_at),
+            )
+            row = con.execute(
+                "SELECT * FROM walk_takeover_requests WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def decide_walk_takeover_request(
+        self, request_id: int, assignee_id: int, approved: bool, decided_at: str
+    ) -> dict | None:
+        status = "approved" if approved else "declined"
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            if approved:
+                pending = con.execute(
+                    """
+                    SELECT walk_date, slot FROM walk_takeover_requests
+                    WHERE id = ? AND assignee_id = ? AND status = 'pending'
+                    """,
+                    (request_id, assignee_id),
+                ).fetchone()
+                if pending and con.execute(
+                    "SELECT 1 FROM walk_completions WHERE walk_date = ? AND slot = ? LIMIT 1",
+                    (pending["walk_date"], pending["slot"]),
+                ).fetchone():
+                    return None
+            cur = con.execute(
+                """
+                UPDATE walk_takeover_requests
+                SET status = ?, decided_at = ?
+                WHERE id = ? AND assignee_id = ? AND status = 'pending'
+                """,
+                (status, decided_at, request_id, assignee_id),
+            )
+            if not cur.rowcount:
+                return None
+            row = con.execute(
+                "SELECT * FROM walk_takeover_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_walk_takeover_requests(self, person_id: int) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT * FROM walk_takeover_requests
+                WHERE assignee_id = ? OR requester_id = ?
+                ORDER BY created_at DESC, id DESC
+                """,
+                (person_id, person_id),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def approved_walk_takeover(
+        self, requester_id: int, walk_date: str, slot: str
+    ) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT 1 FROM walk_takeover_requests
+                WHERE requester_id = ? AND walk_date = ? AND slot = ? AND status = 'approved'
+                """,
+                (requester_id, walk_date, slot),
+            ).fetchone()
+        return row is not None
+
+    def approved_walk_takeover_for_slot(self, walk_date: str, slot: str) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT * FROM walk_takeover_requests
+                WHERE walk_date = ? AND slot = ? AND status = 'approved'
+                """,
+                (walk_date, slot),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def walk_completion_exists(self, walk_date: str, slot: str) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM walk_completions WHERE walk_date = ? AND slot = ? LIMIT 1",
+                (walk_date, slot),
+            ).fetchone()
+        return row is not None
+
     def level_definition(self, level: int, locale: str = "de") -> dict:
         with self._connect() as con:
             row = con.execute(
@@ -914,6 +1119,123 @@ class Database:
 
     # --- Erledigte Gassirunden ----------------------------------------------
 
+    def add_shared_walk_completions(
+        self,
+        owner_id: int,
+        walk_date: str,
+        slot: str,
+        participant_ids: list[int],
+        source: str = "plan",
+    ) -> dict:
+        created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        created = False
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            return self._add_shared_walk_completions(
+                con, owner_id, walk_date, slot, participant_ids, created_at, source
+            )
+
+    def complete_walk_takeover_as_shared(
+        self, request_id: int, assignee_id: int, decided_at: str
+    ) -> dict | None:
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            request = con.execute(
+                """SELECT * FROM walk_takeover_requests
+                   WHERE id = ? AND assignee_id = ? AND status = 'pending'""",
+                (request_id, assignee_id),
+            ).fetchone()
+            if request is None:
+                return None
+            existing_completion = con.execute(
+                """SELECT 1 FROM walk_completions
+                   WHERE walk_date = ? AND slot = ? LIMIT 1""",
+                (request["walk_date"], request["slot"]),
+            ).fetchone()
+            if existing_completion:
+                return None
+
+            shared = self._add_shared_walk_completions(
+                con,
+                assignee_id,
+                request["walk_date"],
+                request["slot"],
+                [request["requester_id"]],
+                decided_at,
+            )
+            updated = con.execute(
+                """UPDATE walk_takeover_requests SET status = 'shared', decided_at = ?
+                   WHERE id = ? AND assignee_id = ? AND status = 'pending'""",
+                (decided_at, request_id, assignee_id),
+            )
+            if not updated.rowcount:
+                con.rollback()
+                return None
+            request = con.execute(
+                "SELECT * FROM walk_takeover_requests WHERE id = ?", (request_id,)
+            ).fetchone()
+        return {"request": dict(request), **shared}
+
+    def _add_shared_walk_completions(
+        self,
+        con: sqlite3.Connection,
+        owner_id: int,
+        walk_date: str,
+        slot: str,
+        participant_ids: list[int],
+        created_at: str,
+        source: str = "plan",
+    ) -> dict:
+        participants = list(dict.fromkeys([owner_id, *participant_ids]))
+        if len(participants) < 2:
+            raise ValueError("Eine gemeinsame Runde braucht mindestens zwei Teilnehmende")
+        group = con.execute(
+            "SELECT id, created_by FROM shared_walks WHERE walk_date = ? AND slot = ?",
+            (walk_date, slot),
+        ).fetchone()
+        if group and group["created_by"] != owner_id:
+            raise ValueError("Die Runde ist bereits einer anderen Person zugeordnet")
+        created = False
+        if group is None:
+            cur = con.execute(
+                """INSERT INTO shared_walks (walk_date, slot, created_by, created_at)
+                   VALUES (?, ?, ?, ?)""",
+                (walk_date, slot, owner_id, created_at),
+            )
+            group_id = cur.lastrowid
+            created = True
+        else:
+            group_id = group["id"]
+        for person_id in participants:
+            existing = con.execute(
+                """SELECT shared_walk_id FROM walk_completions
+                   WHERE person_id = ? AND walk_date = ? AND slot = ?""",
+                (person_id, walk_date, slot),
+            ).fetchone()
+            if existing is None:
+                con.execute(
+                    """INSERT INTO walk_completions
+                       (person_id, walk_date, slot, source, created_at, shared_walk_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (person_id, walk_date, slot, source, created_at, group_id),
+                )
+                created = True
+            elif existing["shared_walk_id"] is None:
+                con.execute(
+                    """UPDATE walk_completions SET shared_walk_id = ?
+                       WHERE person_id = ? AND walk_date = ? AND slot = ?""",
+                    (group_id, person_id, walk_date, slot),
+                )
+                created = True
+            elif existing["shared_walk_id"] != group_id:
+                raise ValueError("Abschluss gehört bereits zu einer anderen gemeinsamen Runde")
+        rows = con.execute(
+            """SELECT person_id, walk_date AS date, slot, source, created_at, shared_walk_id
+               FROM walk_completions WHERE shared_walk_id = ? ORDER BY person_id""",
+            (group_id,),
+        ).fetchall()
+        return {"shared_walk_id": group_id, "created": created, "completions": [dict(row) for row in rows]}
+
     def add_walk_completion(
         self, person_id: int, walk_date: str, slot: str, source: str
     ) -> bool:
@@ -929,21 +1251,61 @@ class Database:
             )
         return cur.rowcount > 0
 
+    def shared_walk_participant_ids(self, walk_date: str, slot: str) -> list[int]:
+        with self._connect() as con:
+            rows = con.execute(
+                """
+                SELECT person_id FROM walk_completions
+                WHERE shared_walk_id = (
+                    SELECT id FROM shared_walks WHERE walk_date = ? AND slot = ?
+                )
+                """,
+                (walk_date, slot),
+            ).fetchall()
+        return [row[0] for row in rows]
+
     def remove_walk_completion(self, person_id: int, walk_date: str, slot: str) -> bool:
         with self._connect() as con:
-            cur = con.execute(
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                """
+                SELECT shared_walk_id FROM walk_completions
+                WHERE person_id = ? AND walk_date = ? AND slot = ?
+                """,
+                (person_id, walk_date, slot),
+            ).fetchone()
+            if row is None:
+                return False
+            con.execute(
                 """
                 DELETE FROM walk_completions
                 WHERE person_id = ? AND walk_date = ? AND slot = ?
                 """,
                 (person_id, walk_date, slot),
             )
-        return cur.rowcount > 0
+            shared_walk_id = row["shared_walk_id"]
+            if shared_walk_id is not None:
+                remaining = con.execute(
+                    "SELECT count(*) FROM walk_completions WHERE shared_walk_id = ?",
+                    (shared_walk_id,),
+                ).fetchone()[0]
+                if remaining < 2:
+                    con.execute(
+                        "UPDATE walk_completions SET shared_walk_id = NULL WHERE shared_walk_id = ?",
+                        (shared_walk_id,),
+                    )
+                    con.execute("DELETE FROM shared_walks WHERE id = ?", (shared_walk_id,))
+        return True
 
     def list_walk_completions(self, person_id: int | None = None) -> list[dict]:
         query = """
-            SELECT person_id, walk_date AS date, slot, source, created_at
-            FROM walk_completions
+            SELECT c.person_id, c.walk_date AS date, c.slot, c.source, c.created_at,
+                   c.shared_walk_id,
+                   CASE WHEN c.shared_walk_id IS NULL THEN 0 ELSE (
+                       SELECT count(*) FROM walk_completions members
+                       WHERE members.shared_walk_id = c.shared_walk_id
+                   ) END AS shared_group_size
+            FROM walk_completions c
         """
         params: tuple[int, ...] = ()
         if person_id is not None:

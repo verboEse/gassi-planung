@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import date as dt_date
 from datetime import timedelta
 
-from app.gamification import level_for_points, summarize_completions
+from app.gamification import badge_progress, level_for_points, summarize_completions
 
 
 def completion(date: str, slot: str = "morning") -> dict:
@@ -43,3 +44,45 @@ def test_full_week_badge_candidate():
     assert "full-week" not in {
         badge["id"] for badge in summarize_completions(without_sunday)["badges"]
     }
+
+
+def test_shared_walk_badges_use_unique_participations_and_group_size():
+    start = dt_date(2026, 1, 1)
+    shared = [
+        {
+            "date": (start + timedelta(days=day)).isoformat(),
+            "slot": "morning",
+            "shared_walk_id": day,
+            "shared_group_size": 4,
+        }
+        for day in range(50)
+    ]
+
+    def badge(condition_type, condition, target=1):
+        return {
+            "id": "test",
+            "condition_type": condition_type,
+            "condition_json": json.dumps(condition),
+            "target_value": target,
+            "retention": "current-count",
+        }
+
+    shared_count = badge("shared-walk-count", {}, target=10)
+    assert badge_progress(shared_count, shared[:9], False)["progress"] == 9
+    assert badge_progress(shared_count, shared[:10], False)["reached_now"]
+    assert badge_progress(
+        badge("shared-walk-count", {}, target=50), shared, False
+    )["reached_now"]
+    assert badge_progress(
+        badge("group-size", {"size": 3}),
+        [{**shared[0], "shared_group_size": 3}],
+        False,
+    )["reached_now"]
+    assert not badge_progress(badge("group-size", {"size": 3}), shared, False)["reached_now"]
+    assert badge_progress(badge("group-size", {"size": 4}), shared, False)["reached_now"]
+    assert badge_progress(badge("group-size", {"minimum_size": 4}), shared, False)["reached_now"]
+    assert not badge_progress(
+        badge("group-size", {"minimum_size": 4}),
+        [{**shared[0], "shared_group_size": 3}],
+        False,
+    )["reached_now"]

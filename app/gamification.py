@@ -10,6 +10,11 @@ BADGE_DEFINITIONS = (
     ("ten-walks", "10 Runden"),
     ("fifty-walks", "50 Runden"),
     ("full-week", "Volle Woche"),
+    ("first-shared-walk", "Gemeinsam gestartet"),
+    ("ten-shared-walks", "Teamgeist 10"),
+    ("fifty-shared-walks", "Teamgeist 50"),
+    ("three-person-walk", "Zu dritt unterwegs"),
+    ("four-plus-walk", "Große Gassi-Gruppe"),
 )
 COUNT_BADGE_IDS = ("first-walk", "ten-walks", "fifty-walks")
 
@@ -54,6 +59,20 @@ def badge_progress(definition: dict, completions: Iterable[dict], already_earned
             if condition.get("source", "any") == "any" or row["source"] == condition["source"]
         )
         value = len({(row["date"], row["slot"]) for row in rows}) if condition.get("source", "any") == "any" else value
+    elif condition_type == "shared-walk-count":
+        value = len({
+            (row["date"], row["slot"])
+            for row in rows
+            if row.get("shared_walk_id") is not None
+        })
+    elif condition_type == "group-size":
+        exact_size = condition.get("size")
+        minimum_size = condition.get("minimum_size")
+        value = int(any(
+            (row.get("shared_group_size", 0) == exact_size if exact_size is not None
+             else row.get("shared_group_size", 0) >= minimum_size)
+            for row in rows
+        ))
     elif condition_type == "full-iso-week":
         days_by_week: dict[tuple[int, int], set[int]] = {}
         for date, _ in unique:

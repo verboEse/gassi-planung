@@ -166,6 +166,46 @@ class TestGamification:
         assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 404
         assert client.get("/api/gamification").json()["persons"][0]["points"] == 1
 
+    def test_walk_session_requires_takeover_approval(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        monkeypatch.setattr(main_module, "send_event_push", lambda *args: None)
+        monkeypatch.setattr(
+            main_module, "load_vapid_configuration", lambda: (None, "mailto:test", "public")
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        day = next(
+            day for day in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if day["date"] == "2026-01-01"
+        )
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        start_url = f"/api/walks/start?person_id={requester['id']}"
+        status = client.get(
+            f"/api/gamification?person_id={requester['id']}"
+        ).json()["walk_status"]
+
+        assert status["assignee_id"] == assignee_id
+        assert client.post(start_url).status_code == 403
+        response = client.post("/api/walk-takeovers", json={
+            "person_id": requester["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+        })
+        assert response.status_code == 201
+        request_id = response.json()["request"]["id"]
+        assert client.post(start_url).status_code == 403
+        assert client.put(
+            f"/api/walk-takeovers/{request_id}",
+            json={"person_id": assignee["id"], "approved": True},
+        ).status_code == 200
+        assert client.post(start_url).status_code == 200
+
     def test_invalid_completion_rejected(self, client, monkeypatch):
         person = add_person(client, "Jan")
         base = {"person_id": person["id"], "date": "2026-01-01", "source": "plan"}
@@ -201,6 +241,241 @@ class TestGamification:
             "source": "plan",
         })
         assert response.status_code == 403
+
+    def test_takeover_requires_assignee_approval(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        pushes = []
+        monkeypatch.setattr(main_module, "send_event_push", lambda *args: pushes.append(args))
+        monkeypatch.setattr(
+            main_module, "load_vapid_configuration", lambda: (None, "mailto:test", "public")
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        plan_before = client.get("/api/plan?year=2026&week=1").json()
+        day = next(day for day in plan_before["days"] if day["date"] == "2026-01-01")
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        payload = {
+            "person_id": requester["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+        }
+
+        requested = client.post("/api/walk-takeovers", json=payload)
+        assert requested.status_code == 201, requested.text
+        request = requested.json()["request"]
+        assert pushes[-1][1] == assignee_id
+        assert "übernehmen" in pushes[-1][2]["title"]
+        assert client.get(
+            f"/api/walk-takeovers?person_id={assignee['id']}"
+        ).json()["requests"][0]["id"] == request["id"]
+        completion = {
+            **payload,
+            "source": "plan",
+        }
+        assert client.put("/api/completions", json=completion).status_code == 403
+        assert client.put(
+            f"/api/walk-takeovers/{request['id']}",
+            json={"person_id": requester["id"], "approved": True},
+        ).status_code == 404
+        approved = client.put(
+            f"/api/walk-takeovers/{request['id']}",
+            json={"person_id": assignee["id"], "approved": True},
+        )
+        assert approved.status_code == 200
+        assert approved.json()["request"]["status"] == "approved"
+        assert pushes[-1][1] == requester["id"]
+        assert "freigegeben" in pushes[-1][2]["title"]
+        assert client.put("/api/completions", json={
+            **completion, "person_id": assignee["id"],
+        }).status_code == 403
+        assert client.put("/api/completions", json=completion).status_code == 200
+        assert client.get("/api/plan?year=2026&week=1").json() == plan_before
+        points = {
+            person["id"]: person["points"]
+            for person in client.get("/api/gamification").json()["persons"]
+        }
+        assert points[requester["id"]] == 1
+
+    def test_group_takeover_records_shared_completion(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        pushes = []
+        monkeypatch.setattr(main_module, "send_event_push", lambda *args: pushes.append(args))
+        monkeypatch.setattr(
+            main_module, "load_vapid_configuration", lambda: (None, "mailto:test", "public")
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        day = next(
+            day for day in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if day["date"] == "2026-01-01"
+        )
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        requested = client.post("/api/walk-takeovers", json={
+            "person_id": requester["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+        })
+        request_id = requested.json()["request"]["id"]
+
+        confirmed = client.post(
+            f"/api/walk-takeovers/{request_id}/group",
+            json={"person_id": assignee["id"]},
+        )
+
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["request"]["status"] == "shared"
+        assert {row["person_id"] for row in confirmed.json()["completions"]} == {
+            requester["id"], assignee["id"],
+        }
+        assert len({row["shared_walk_id"] for row in confirmed.json()["completions"]}) == 1
+        assert pushes[-1][1] == requester["id"]
+        assert pushes[-1][2]["title"] == "Gemeinsame Gassirunde bestätigt"
+        assert client.post(
+            f"/api/walk-takeovers/{request_id}/group",
+            json={"person_id": assignee["id"]},
+        ).status_code == 404
+
+    def test_declined_takeover_cannot_be_completed(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        pushes = []
+        monkeypatch.setattr(main_module, "send_event_push", lambda *args: pushes.append(args))
+        monkeypatch.setattr(
+            main_module, "load_vapid_configuration", lambda: (None, "mailto:test", "public")
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        day = next(
+            day for day in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if day["date"] == "2026-01-01"
+        )
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        response = client.post("/api/walk-takeovers", json={
+            "person_id": requester["id"], "date": "2026-01-01", "slot": "morning",
+        })
+        request = response.json()["request"]
+        declined = client.put(f"/api/walk-takeovers/{request['id']}", json={
+            "person_id": assignee["id"], "approved": False,
+        })
+        assert declined.status_code == 200
+        assert declined.json()["request"]["status"] == "declined"
+        assert pushes[-1][1] == requester["id"]
+        assert "wahrgenommen" in pushes[-1][2]["body"]
+        assert client.put("/api/completions", json={
+            "person_id": requester["id"], "date": "2026-01-01",
+            "slot": "morning", "source": "plan",
+        }).status_code == 403
+
+    def test_shared_walk_awards_both_and_retries_idempotently(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        people = {jan["id"], laura["id"]}
+        day = next(
+            day for day in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if day["date"] == "2026-01-01"
+        )
+        owner_id = day["slots"]["morning"]["person_id"]
+        co_walker_id = next(person_id for person_id in people if person_id != owner_id)
+        payload = {
+            "person_id": owner_id,
+            "date": "2026-01-01",
+            "slot": "morning",
+            "source": "plan",
+            "co_walker_ids": [co_walker_id],
+        }
+
+        solo_payload = {
+            key: value for key, value in payload.items() if key != "co_walker_ids"
+        }
+        assert client.put("/api/completions", json=solo_payload).json()["created"]
+        first = client.put("/api/completions", json=payload)
+        assert first.status_code == 200 and first.json()["created"]
+        retry = client.put("/api/completions", json=payload)
+        assert retry.status_code == 200 and not retry.json()["created"]
+        progress = client.get("/api/gamification").json()
+        assert {row["person_id"] for row in progress["completions"]} == people
+        assert {row["shared_group_size"] for row in progress["completions"]} == {2}
+        assert {person["points"] for person in progress["persons"]} == {1}
+
+    def test_shared_walk_corrections_update_group_size(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        people = [add_person(client, name) for name in ("Jan", "Laura", "Max", "Eva")]
+        day = next(
+            day for day in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if day["date"] == "2026-01-01"
+        )
+        owner_id = day["slots"]["morning"]["person_id"]
+        co_walker_ids = [person["id"] for person in people if person["id"] != owner_id]
+        payload = {
+            "person_id": owner_id,
+            "date": "2026-01-01",
+            "slot": "morning",
+            "source": "plan",
+            "co_walker_ids": co_walker_ids,
+        }
+        assert client.put("/api/completions", json=payload).status_code == 200
+        initial = client.get("/api/gamification").json()
+        assert {row["shared_group_size"] for row in initial["completions"]} == {4}
+        for participant in initial["persons"]:
+            assert {badge["id"] for badge in participant["badges"]} >= {
+                "first-shared-walk", "four-plus-walk",
+            }
+
+        for index, (person_id, expected_size) in enumerate(
+            zip(co_walker_ids, (3, 2, 0))
+        ):
+            removed = client.delete(
+                f"/api/completions/2026-01-01/morning?person_id={person_id}"
+            )
+            assert removed.status_code == 200
+            progress = client.get("/api/gamification").json()
+            assert {row["shared_group_size"] for row in progress["completions"]} == {
+                expected_size
+            }
+            badges = [
+                {badge["id"] for badge in participant["badges"]}
+                for participant in progress["persons"]
+            ]
+            if expected_size == 3:
+                assert all("three-person-walk" in ids for ids in badges if ids)
+                assert all("four-plus-walk" not in ids for ids in badges)
+            elif expected_size == 2:
+                assert all(
+                    "three-person-walk" not in ids and "four-plus-walk" not in ids
+                    for ids in badges
+                )
+            else:
+                owner_badges = next(
+                    badge_ids for person, badge_ids in zip(people, badges)
+                    if person["id"] == owner_id
+                )
+                assert "first-shared-walk" not in owner_badges
 
 
 class TestPrefs:
