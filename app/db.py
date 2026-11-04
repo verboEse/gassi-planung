@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS activity_log (
 )
 """
 
+NEWS_READS_DDL = """
+CREATE TABLE IF NOT EXISTS news_reads (
+    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+    news_id TEXT NOT NULL,
+    read_at TEXT NOT NULL,
+    PRIMARY KEY (person_id, news_id)
+)
+"""
+
 WEEKLY_PLANS_DDL = """
 CREATE TABLE IF NOT EXISTS weekly_plans (
     year INTEGER NOT NULL,
@@ -310,6 +319,7 @@ class Database:
                 if "auth_version" not in account_cols:
                     con.execute("ALTER TABLE accounts ADD COLUMN auth_version INTEGER NOT NULL DEFAULT 1")
             con.execute(ACTIVITY_DDL)
+            con.execute(NEWS_READS_DDL)
             con.execute(WEEKLY_PLANS_DDL)
             con.execute(SHARED_WALKS_DDL)
             con.execute(WALK_TAKEOVER_REQUESTS_DDL)
@@ -858,6 +868,26 @@ class Database:
                 (int(enabled), row["person_id"]),
             )
         return True
+
+    def news_read_ids(self, person_id: int) -> set[str]:
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT news_id FROM news_reads WHERE person_id = ?",
+                (person_id,),
+            ).fetchall()
+        return {row["news_id"] for row in rows}
+
+    def mark_news_read(self, person_id: int, news_id: str) -> None:
+        read_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute(
+                """
+                INSERT INTO news_reads (person_id, news_id, read_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT (person_id, news_id) DO NOTHING
+                """,
+                (person_id, news_id, read_at),
+            )
 
     def record_activity(
         self,

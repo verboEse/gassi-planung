@@ -61,6 +61,18 @@ PUSH_SERVICE_HOSTS = {
     "updates.push.services.mozilla.com",
     "web.push.apple.com",
 }
+RELEASE_NEWS = (
+    {
+        "id": "0.1.0-walk-coordination",
+        "version": "0.1.0",
+        "title": "Gemeinsame Gassirunden und Übernahmen",
+        "body": (
+            "Du kannst eine Runde jetzt gemeinsam mit einer anderen Person als erledigt "
+            "eintragen oder eine Übernahme anfragen. Die betroffene Person bestätigt, "
+            "bevor die Übernahme im Plan gilt."
+        ),
+    },
+)
 
 
 def _decode_web_push_key(value: str) -> bytes | None:
@@ -372,6 +384,28 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             request.session["auth_version"] = account["auth_version"]
             db.record_activity(account["name"], "login", account["name"])
             return {"ok": True}
+
+        @app.get("/api/news")
+        def get_news(account: dict | None = Depends(require_account)):
+            assert account is not None
+            if account["is_admin"]:
+                return {"news": []}
+            read_ids = db.news_read_ids(account["id"])
+            return {
+                "news": [item for item in RELEASE_NEWS if item["id"] not in read_ids]
+            }
+
+        @app.post("/api/news/{news_id}/read", status_code=204)
+        def mark_news_read(
+            news_id: str,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            if account["is_admin"] or not any(
+                item["id"] == news_id for item in RELEASE_NEWS
+            ):
+                raise HTTPException(404, "Neuigkeit nicht gefunden")
+            db.mark_news_read(account["id"], news_id)
 
         @app.post("/auth/logout", status_code=204)
         def logout(request: Request):

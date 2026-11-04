@@ -1442,6 +1442,49 @@ document.getElementById("logoutBtn").onclick = async () => {
   } catch (e) { toast(e.message); }
 };
 
+document.getElementById("newsLaterButton").onclick = () => {
+  document.getElementById("newsDialog").close();
+};
+
+async function loadNews() {
+  if (!state.me || state.me.person.is_admin) return;
+  try {
+    const { news } = await api("/api/news");
+    if (!news.length) return;
+    const dialog = document.getElementById("newsDialog");
+    const container = document.getElementById("newsItems");
+    container.replaceChildren();
+    for (const item of news) {
+      const article = document.createElement("article");
+      article.className = "news-item";
+      const title = document.createElement("h3");
+      title.textContent = item.title;
+      const version = document.createElement("p");
+      version.className = "news-version";
+      version.textContent = `Version ${item.version}`;
+      const body = document.createElement("p");
+      body.textContent = item.body;
+      const readButton = document.createElement("button");
+      readButton.type = "button";
+      readButton.textContent = "Als gelesen markieren";
+      readButton.onclick = async () => {
+        readButton.disabled = true;
+        try {
+          await api(`/api/news/${encodeURIComponent(item.id)}/read`, { method: "POST" });
+          article.remove();
+          if (!container.childElementCount) dialog.close();
+        } catch (error) {
+          readButton.disabled = false;
+          toast(error.message);
+        }
+      };
+      article.append(title, version, body, readButton);
+      container.append(article);
+    }
+    dialog.showModal();
+  } catch (error) { toast(error.message); }
+}
+
 async function initialize() {
   const auth = document.getElementById("authSection");
   const content = document.getElementById("appContent");
@@ -1477,7 +1520,10 @@ async function initialize() {
   loadWeek()
     .then(async () => {
       await loadGamification();
-      if (state.me) await loadProfile();
+      if (state.me) {
+        await loadProfile();
+        await loadNews();
+      }
       applyAppRoute();
     })
     .catch(e => toast(e.message));

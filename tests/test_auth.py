@@ -160,6 +160,39 @@ def test_takeover_endpoints_require_authenticated_identity(tmp_path, monkeypatch
         }).status_code == 200
 
 
+def test_release_news_is_member_only_and_read_state_persists(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "release-news.sqlite3"
+    db = Database(db_path)
+    db.add_account("Jan", hash_password("jan family password"))
+    db.add_account("Admin", hash_password("admin family password"))
+    assert db.set_admin("Admin", True)
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.get("/api/news").status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        news = client.get("/api/news").json()["news"]
+        assert len(news) == 1
+        assert news[0]["version"] == "0.1.0"
+        assert client.post(f"/api/news/{news[0]['id']}/read").status_code == 204
+        assert client.get("/api/news").json()["news"] == []
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert client.get("/api/news").json()["news"] == []
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": "Admin", "password": "admin family password",
+        }).status_code == 200
+        assert client.get("/api/news").json()["news"] == []
+
+
 def test_push_subscription_endpoints_are_authenticated_and_owned(tmp_path, monkeypatch):
     secret = "test-session-secret-that-is-long-enough"
     monkeypatch.setenv("GASSI_SESSION_SECRET", secret)
