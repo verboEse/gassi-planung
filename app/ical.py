@@ -69,6 +69,7 @@ def build_ics(
     recurring: bool = True,
     future_assignments: list[Assignment] | None = None,
     reminders_enabled: bool = False,
+    base_url: str | None = None,
 ) -> str:
     """Baut Kalendertermine für eine Person, optional mit separater Folgewoche."""
     lines = [
@@ -110,6 +111,15 @@ def build_ics(
                 f"SUMMARY:{escape_text(f'🐕 Gassi – {SLOT_LABELS[a.slot]}')}",
                 f"DESCRIPTION:{escape_text(description)}",
             ]
+            if base_url:
+                target = (
+                    f"weekday/{d.isoweekday()}/{a.slot}"
+                    if repeats
+                    else f"date/{a.date}/{a.slot}"
+                )
+                lines.append(
+                    f"URL:{base_url.rstrip('/')}/#walk/{target}/{person_id}"
+                )
             if reminders_enabled:
                 lines += [
                     "BEGIN:VALARM",

@@ -166,6 +166,23 @@ class TestGamification:
         assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 404
         assert client.get("/api/gamification").json()["persons"][0]["points"] == 1
 
+    def test_calendar_link_start_requires_matching_walk(self, client, monkeypatch):
+        person = add_person(client, "Jan")
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        start_url = f"/api/walks/start?person_id={person['id']}"
+
+        assert client.post(f"{start_url}&date=2026-01-01&slot=noon").status_code == 422
+        assert client.post(f"{start_url}&weekday=5&slot=morning").status_code == 422
+        started = client.post(f"{start_url}&weekday=4&slot=morning")
+        assert started.status_code == 200
+        assert started.json()["active"]["date"] == "2026-01-01"
+        assert client.post(f"{start_url}&weekday=4&slot=morning").json()["created"] is False
+        assert client.post(f"{start_url}&weekday=4&slot=noon").status_code == 409
+
     def test_walk_session_requires_takeover_approval(self, client, monkeypatch):
         monkeypatch.setattr(
             main_module,

@@ -83,6 +83,19 @@ class TestBuildIcs:
         assert "UID:gassi-2026-10-12-noon-7@gassi-planung" in ics
         assert "RRULE" not in ics
 
+    def test_event_urls_target_the_calendar_walk(self):
+        ics = build_ics(
+            7,
+            "Jan",
+            [make_assignment("2026-10-12", "morning")],
+            recurring=False,
+            future_assignments=[make_assignment("2026-10-19", "noon")],
+            base_url="https://gassi.example/",
+        )
+
+        assert "URL:https://gassi.example/#walk/date/2026-10-12/morning/7" in ics
+        assert "URL:https://gassi.example/#walk/weekday/1/noon/7" in ics
+
     def test_multiple_events_sorted(self):
         assignments = [
             make_assignment("2026-10-13", "evening"),
@@ -145,6 +158,17 @@ class TestCalendarEndpoint:
         assert "-1@gassi-planung" in body
         assert "-2@gassi-planung" not in body
         assert "-3@gassi-planung" not in body
+
+    def test_feed_events_link_to_configured_app(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
+        monkeypatch.setenv("GASSI_BASE_URL", "https://gassi.example/")
+        app = create_app(str(tmp_path / "calendar-links.sqlite3"), auth_enabled=False)
+
+        with TestClient(app) as client:
+            person = add_person(client, "Jan")
+            body = client.get(f"/api/calendar/{person['id']}.ics").text
+
+        assert body.count("URL:https://gassi.example/#walk/") == body.count("BEGIN:VEVENT")
 
     def test_feed_alarms_follow_person_reminder_preference(self, tmp_path, monkeypatch):
         monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
