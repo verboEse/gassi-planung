@@ -953,7 +953,10 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             definition["id"]
             for definition in definitions
             if badge_progress(
-                definition, completions, definition["id"] in already_earned
+                definition,
+                completions,
+                definition["id"] in already_earned,
+                as_of=berlin_now(),
             )["reached_now"]
         }
         db.award_badges(person_id, list(reached_ids))

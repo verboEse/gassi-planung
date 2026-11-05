@@ -152,9 +152,10 @@ def badge_progress(
         current_end = max(slots, default=None)
         if as_of is not None:
             current_end = _latest_elapsed_slot(as_of)
-        value = best
+        current = _current_streak(slots, current_end)
+        value = current
         streak_progress = {
-            "current_streak": _current_streak(slots, current_end),
+            "current_streak": current,
             "best_streak": best,
         }
     elif condition_type == "full-iso-week":

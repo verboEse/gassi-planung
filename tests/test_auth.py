@@ -531,6 +531,71 @@ def test_secret_streak_badge_is_hidden_then_revoked_after_correction(tmp_path, m
         assert client.get("/api/badges/ten-day-streak").status_code == 404
 
 
+def test_secret_round_streak_is_revoked_and_reawarded_after_missed_slot(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    berlin_tz = ZoneInfo("Europe/Berlin")
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 1, 4, 9, 0, tzinfo=berlin_tz),
+    )
+    db_path = tmp_path / "round-streak.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    for day in range(1, 4):
+        for slot in ("morning", "noon", "evening"):
+            db.add_walk_completion(jan["id"], f"2026-01-{day:02d}", slot, "manual")
+    db.add_walk_completion(jan["id"], "2026-01-04", "morning", "manual")
+
+    app = create_app(str(db_path))
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        current = client.get("/api/badges").json()
+        streak = next(
+            badge for badge in current["badges"] if badge["id"] == "ten-round-streak"
+        )
+        assert streak["current_streak"] == 10
+
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 4, 16, 0, tzinfo=berlin_tz),
+        )
+        current = client.get("/api/badges").json()
+        assert "ten-round-streak" not in {badge["id"] for badge in current["badges"]}
+        assert client.get("/api/badges/ten-round-streak").status_code == 404
+
+        recovery = [
+            ("2026-01-04", "evening"),
+            ("2026-01-05", "morning"),
+            ("2026-01-05", "noon"),
+            ("2026-01-05", "evening"),
+            ("2026-01-06", "morning"),
+            ("2026-01-06", "noon"),
+            ("2026-01-06", "evening"),
+            ("2026-01-07", "morning"),
+            ("2026-01-07", "noon"),
+            ("2026-01-07", "evening"),
+        ]
+        for walk_date, slot in recovery:
+            db.add_walk_completion(jan["id"], walk_date, slot, "manual")
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 7, 23, 0, tzinfo=berlin_tz),
+        )
+        current = client.get("/api/badges").json()
+        streak = next(
+            badge for badge in current["badges"] if badge["id"] == "ten-round-streak"
+        )
+        assert streak["current_streak"] == 10
+        assert streak["earned"]
+
+
 def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
     monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
