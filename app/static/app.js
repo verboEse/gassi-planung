@@ -15,16 +15,26 @@ const state = {
   badgeHistory: false,
   badgeDetail: null,
   walkTarget: null,
+  dogs: null,
+  dogShare: null,
 };
 
 let authMode = "login";
 let weekRequest = null;
 let groupWalkTarget = null;
 let takeoverApprovalTarget = null;
+let dogSelectionResolver = null;
 let calendarWalkStartInFlight = false;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
+const DOG_PROFILE_FIELDS = [
+  { key: "feeding_instructions", inputId: "dogFeeding", label: "Fütterung" },
+  { key: "medication_notes", inputId: "dogMedication", label: "Medikamente" },
+  { key: "allergies", inputId: "dogAllergies", label: "Allergien" },
+  { key: "veterinary_contact", inputId: "dogVeterinary", label: "Tierarztkontakt" },
+  { key: "walk_notes", inputId: "dogWalkNotes", label: "Gassi-Hinweise" },
+];
 const PREF_OPTIONS = [
   { value: "", label: "–" },
   { value: "3", label: "3 gern" },
@@ -402,6 +412,12 @@ function renderGamification() {
     row.appendChild(document.createTextNode(
       `${fmtDate(completion.date)} · ${SLOT_LABELS[completion.slot]}`
     ));
+    const dogs = document.createElement("span");
+    dogs.className = "completion-dogs";
+    dogs.textContent = completion.dog_names?.length
+      ? ` · ${completion.dog_names.join(", ")}`
+      : " · Hunde nicht erfasst";
+    row.appendChild(dogs);
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "secondary";
@@ -418,6 +434,205 @@ async function loadGamification() {
   renderGamification();
   renderPlan();
   if (state.badgeCatalog) await loadBadgeCatalog(state.badgeHistory);
+}
+
+function renderDogCare() {
+  const list = document.getElementById("dogList");
+  list.replaceChildren();
+  if (!state.dogs.length) {
+    list.textContent = "Noch keine Hunde angelegt.";
+    list.className = "dog-list empty";
+    return;
+  }
+  list.className = "dog-list";
+  for (const dog of state.dogs) {
+    const card = document.createElement("section");
+    card.className = "card dog-card";
+    const heading = document.createElement("h3");
+    heading.textContent = dog.name;
+    card.appendChild(heading);
+
+    const details = document.createElement("dl");
+    details.className = "dog-details";
+    for (const field of DOG_PROFILE_FIELDS) {
+      const label = document.createElement("dt");
+      label.textContent = field.label;
+      const value = document.createElement("dd");
+      value.textContent = dog[field.key] || "–";
+      details.append(label, value);
+    }
+    card.appendChild(details);
+
+    const compatibility = document.createElement("fieldset");
+    compatibility.className = "dog-compatibilities";
+    const legend = document.createElement("legend");
+    legend.textContent = "Kann zusammen laufen mit";
+    const options = document.createElement("div");
+    options.className = "dog-compatibility-options";
+    for (const other of state.dogs) {
+      if (other.id === dog.id) continue;
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = dog.compatible_dog_ids.includes(other.id);
+      input.onchange = () => updateDogCompatibility(dog, other.id, input.checked);
+      label.append(input, document.createTextNode(other.name));
+      options.appendChild(label);
+    }
+    if (state.dogs.length === 1) options.textContent = "Keine weiteren Hunde.";
+    compatibility.append(legend, options);
+    card.appendChild(compatibility);
+
+    const actions = document.createElement("div");
+    actions.className = "dog-card-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "secondary";
+    edit.textContent = "Bearbeiten";
+    edit.onclick = () => editDog(dog);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "secondary";
+    remove.textContent = "Löschen";
+    remove.onclick = () => deleteDog(dog);
+    actions.append(edit, remove);
+    card.appendChild(actions);
+    list.appendChild(card);
+  }
+}
+
+function renderDogShare() {
+  const enabled = Boolean(state.dogShare?.enabled);
+  const status = document.getElementById("dogShareStatus");
+  const url = document.getElementById("dogShareUrl");
+  status.textContent = enabled
+    ? "Die Pflegeinformationen sind über den Link öffentlich lesbar."
+    : "Die Pflegeinformationen sind derzeit nicht freigegeben.";
+  document.getElementById("dogShareToggleButton").textContent = enabled
+    ? "Freigabe widerrufen"
+    : "Freigabe aktivieren";
+  url.value = state.dogShare?.share_url || "";
+  url.hidden = !enabled;
+  document.getElementById("copyDogShareUrl").hidden = !enabled;
+}
+
+async function loadDogCare() {
+  const [dogs, share] = await Promise.all([
+    api("/api/dogs"),
+    api("/api/dog-care-share"),
+  ]);
+  state.dogs = dogs.dogs;
+  state.dogShare = share;
+  renderDogCare();
+  renderDogShare();
+}
+
+async function updateDogCompatibility(dog, otherDogId, compatible) {
+  const compatibleDogIds = new Set(dog.compatible_dog_ids);
+  if (compatible) compatibleDogIds.add(otherDogId);
+  else compatibleDogIds.delete(otherDogId);
+  try {
+    await api(`/api/dogs/${dog.id}/compatibility`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ compatible_dog_ids: [...compatibleDogIds] }),
+    });
+    await loadDogCare();
+  } catch (error) {
+    toast(error.message);
+    await loadDogCare().catch(loadError => toast(loadError.message));
+  }
+}
+
+function editDog(dog) {
+  document.getElementById("dogId").value = String(dog.id);
+  document.getElementById("dogName").value = dog.name;
+  for (const field of DOG_PROFILE_FIELDS) {
+    document.getElementById(field.inputId).value = dog[field.key];
+  }
+  document.getElementById("dogForm").querySelector("button[type=submit]").textContent = "Änderungen speichern";
+  document.getElementById("cancelDogEdit").hidden = false;
+  document.getElementById("dogName").focus();
+}
+
+function resetDogForm() {
+  document.getElementById("dogForm").reset();
+  document.getElementById("dogId").value = "";
+  document.getElementById("dogForm").querySelector("button[type=submit]").textContent = "Hund speichern";
+  document.getElementById("cancelDogEdit").hidden = true;
+}
+
+async function deleteDog(dog) {
+  if (!confirm(`Hund ${dog.name} löschen? Vorhandene Hund-Zuordnungen aus der Historie werden entfernt.`)) return;
+  try {
+    await api(`/api/dogs/${dog.id}`, { method: "DELETE" });
+    await loadDogCare();
+    await loadGamification();
+  } catch (error) { toast(error.message); }
+}
+
+async function requestDogSelections(personIds) {
+  if (state.me && state.dogs === null) await loadDogCare();
+  if (!state.dogs?.length) return {};
+  if (dogSelectionResolver) return null;
+
+  const participantIds = [...new Set(personIds)];
+  const fields = document.getElementById("dogSelectionFields");
+  fields.replaceChildren();
+  document.getElementById("dogSelectionMessage").textContent =
+    "Wähle mindestens einen Hund pro teilnehmender Person. Nicht kompatible Hunde können nicht gemeinsam laufen.";
+  for (const personId of participantIds) {
+    const person = state.data.persons.find(item => item.id === personId) ||
+      state.adminData?.users.find(item => item.id === personId);
+    const group = document.createElement("fieldset");
+    group.className = "dog-selection-group";
+    group.dataset.personId = String(personId);
+    const legend = document.createElement("legend");
+    legend.textContent = person?.name || `Person ${personId}`;
+    const choices = document.createElement("div");
+    choices.className = "dog-choice-list";
+    for (const dog of state.dogs) {
+      const label = document.createElement("label");
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = String(dog.id);
+      label.append(input, document.createTextNode(dog.name));
+      choices.appendChild(label);
+    }
+    group.append(legend, choices);
+    fields.appendChild(group);
+  }
+  document.getElementById("dogSelectionDialog").showModal();
+  return new Promise(resolve => { dogSelectionResolver = resolve; });
+}
+
+function confirmDogSelections() {
+  if (!dogSelectionResolver) return;
+  const selections = {};
+  const selectedDogIds = new Set();
+  for (const group of document.querySelectorAll("#dogSelectionFields .dog-selection-group")) {
+    const personId = Number(group.dataset.personId);
+    const dogIds = [...group.querySelectorAll("input:checked")].map(input => Number(input.value));
+    if (!dogIds.length) {
+      toast("Wähle mindestens einen Hund für jede teilnehmende Person aus.");
+      return;
+    }
+    selections[personId] = dogIds;
+    for (const dogId of dogIds) selectedDogIds.add(dogId);
+  }
+  const selectedDogs = [...selectedDogIds].map(id => state.dogs.find(dog => dog.id === id));
+  for (let index = 0; index < selectedDogs.length; index += 1) {
+    for (const other of selectedDogs.slice(index + 1)) {
+      if (!selectedDogs[index].compatible_dog_ids.includes(other.id)) {
+        toast("Die ausgewählten Hunde dürfen nicht gemeinsam laufen.");
+        return;
+      }
+    }
+  }
+  const resolve = dogSelectionResolver;
+  dogSelectionResolver = null;
+  document.getElementById("dogSelectionDialog").close();
+  resolve(selections);
 }
 
 async function requestTakeover(date, slot) {
@@ -464,7 +679,10 @@ async function confirmTakeoverApproval() {
 }
 
 function openGroupWalkDialog(requestId, requesterId, date, slot) {
-  groupWalkTarget = { requestId };
+  groupWalkTarget = {
+    requestId,
+    personIds: [state.me?.person.id ?? state.selectedPerson, requesterId],
+  };
   const requester = state.data.persons.find(person => person.id === requesterId);
   document.getElementById("groupWalkMessage").textContent =
     `Die Runde ${SLOT_LABELS[slot]} am ${fmtDate(date)} für dich und ${requester?.name || "die anfragende Person"} als gemeinsam erledigt eintragen?`;
@@ -473,16 +691,18 @@ function openGroupWalkDialog(requestId, requesterId, date, slot) {
 
 async function confirmGroupWalk() {
   if (!groupWalkTarget) return;
-  const { requestId } = groupWalkTarget;
-  const body = {};
-  if (!state.me) body.person_id = state.selectedPerson;
+  const { requestId, personIds } = groupWalkTarget;
+  document.getElementById("groupWalkDialog").close();
   try {
+    const dogIdsByPerson = await requestDogSelections(personIds);
+    if (dogIdsByPerson === null) return;
+    const body = { dog_ids_by_person: dogIdsByPerson };
+    if (!state.me) body.person_id = state.selectedPerson;
     await api(`/api/walk-takeovers/${requestId}/group`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    document.getElementById("groupWalkDialog").close();
     toast("Gemeinsame Runde bestätigt");
     await loadGamification();
     await loadWeek(true);
@@ -494,8 +714,12 @@ async function toggleCompletion(date, slot, completed) {
     const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
     await api(`/api/completions/${date}/${slot}${personId}`, { method: "DELETE" });
   } else {
+    const personId = state.me?.person.id ?? state.selectedPerson;
+    const dogIdsByPerson = await requestDogSelections([personId]);
+    if (dogIdsByPerson === null) return;
     const body = { date, slot, source: "plan" };
     if (!state.me) body.person_id = state.selectedPerson;
+    body.dog_ids_by_person = dogIdsByPerson;
     await api("/api/completions", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -829,15 +1053,19 @@ function applyAppRoute() {
   state.walkTarget = parseWalkTarget(route);
   const isProfile = route === "profile";
   const isBadges = route === "badges" || route === "history" || route.startsWith("badge/");
-  const isPlan = !isProfile && !isBadges;
+  const isDogCare = route === "dog-care";
+  const isPlan = !isProfile && !isBadges && !isDogCare;
   document.getElementById("planView").hidden = !isPlan;
   document.getElementById("profileView").hidden = !isProfile;
   document.getElementById("badgesView").hidden = !isBadges;
+  document.getElementById("dogCareView").hidden = !isDogCare;
+  document.getElementById("dogCareButton").hidden = !state.me || isDogCare;
   document.getElementById("planHomeButton").hidden = isPlan;
   const detailId = route.startsWith("badge/") ? route.slice("badge/".length) : null;
   document.getElementById("badgeOverview").hidden = Boolean(detailId);
   document.getElementById("badgeDetail").hidden = !detailId;
   if (isProfile && state.me && !state.profile) loadProfile().catch(error => toast(error.message));
+  if (isDogCare && state.me && state.dogs === null) loadDogCare().catch(error => toast(error.message));
   if (isBadges && state.me && (!state.badgeCatalog || state.badgeHistory !== (route === "history"))) {
     loadBadgeCatalog(route === "history").catch(error => toast(error.message));
   }
@@ -1164,6 +1392,8 @@ async function submitAdminCompletion(event) {
     return;
   }
   try {
+    const dogIdsByPerson = await requestDogSelections(personIds);
+    if (dogIdsByPerson === null) return;
     const result = await api("/api/admin/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1172,6 +1402,7 @@ async function submitAdminCompletion(event) {
         date: document.getElementById("adminCompletionDate").value,
         slot: document.getElementById("adminCompletionSlot").value,
         person_ids: personIds,
+        dog_ids_by_person: dogIdsByPerson,
       }),
     });
     toast(result.created
@@ -1395,8 +1626,18 @@ document.getElementById("walkSessionButton").onclick = async () => {
         return;
       }
     }
+    let body;
+    if (active) {
+      const dogIdsByPerson = await requestDogSelections([state.me.person.id]);
+      if (dogIdsByPerson === null) return;
+      body = { dog_ids: dogIdsByPerson[state.me.person.id] || [] };
+    }
     const result = await api(active ? "/api/walks/end" : "/api/walks/start", {
       method: "POST",
+      ...(body ? {
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      } : {}),
     });
     toast(active ? "Gassi-Runde beendet" : `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`);
     await loadGamification();
@@ -1408,6 +1649,64 @@ document.getElementById("groupWalkCancelButton").onclick = () => {
 };
 document.getElementById("groupWalkDialog").addEventListener("close", () => {
   groupWalkTarget = null;
+});
+document.getElementById("dogCareButton").onclick = () => navigateApp("dog-care");
+document.getElementById("dogForm").onsubmit = async event => {
+  event.preventDefault();
+  const name = document.getElementById("dogName").value.trim();
+  if (!name) {
+    toast("Der Hund braucht einen Namen.");
+    return;
+  }
+  const dogId = document.getElementById("dogId").value;
+  const body = { name };
+  for (const field of DOG_PROFILE_FIELDS) {
+    body[field.key] = document.getElementById(field.inputId).value;
+  }
+  try {
+    await api(dogId ? `/api/dogs/${dogId}` : "/api/dogs", {
+      method: dogId ? "PATCH" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    resetDogForm();
+    await loadDogCare();
+  } catch (error) { toast(error.message); }
+};
+document.getElementById("cancelDogEdit").onclick = resetDogForm;
+document.getElementById("dogShareToggleButton").onclick = async () => {
+  try {
+    if (state.dogShare?.enabled) {
+      if (!confirm("Freigabe widerrufen? Der bisherige Link ist danach ungültig.")) return;
+      await api("/api/dog-care-share", { method: "DELETE" });
+      state.dogShare = { enabled: false, share_url: null };
+    } else {
+      const result = await api("/api/dog-care-share", { method: "POST" });
+      state.dogShare = { enabled: true, ...result };
+    }
+    renderDogShare();
+  } catch (error) { toast(error.message); }
+};
+document.getElementById("copyDogShareUrl").onclick = async () => {
+  const url = document.getElementById("dogShareUrl").value;
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error("Clipboard nicht verfügbar");
+    await navigator.clipboard.writeText(url);
+    toast("Link kopiert");
+  } catch {
+    document.getElementById("dogShareUrl").select();
+    toast("Link markieren und kopieren");
+  }
+};
+document.getElementById("dogSelectionConfirmButton").onclick = confirmDogSelections;
+document.getElementById("dogSelectionCancelButton").onclick = () => {
+  document.getElementById("dogSelectionDialog").close();
+};
+document.getElementById("dogSelectionDialog").addEventListener("close", () => {
+  if (!dogSelectionResolver) return;
+  const resolve = dogSelectionResolver;
+  dogSelectionResolver = null;
+  resolve(null);
 });
 document.getElementById("takeoverApprovalConfirmButton").onclick = confirmTakeoverApproval;
 document.getElementById("takeoverApprovalCancelButton").onclick = () => {

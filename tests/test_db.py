@@ -71,6 +71,49 @@ class TestMigration:
         db = Database(db_file)  # zweiter Start: keine Doppel-Migration
         assert db.prefs_all()[(1, "morning", 1)] == 1
 
+    def test_dog_care_schema_migrates_without_changing_walks_or_plans(self, tmp_path):
+        db_file = tmp_path / "dog-care-migration.sqlite3"
+        db = Database(db_file)
+        jan = db.add_person("Jan")
+        db.add_walk_completion(jan["id"], "2026-10-12", "morning", "plan")
+        with db._connect() as con:
+            con.execute(
+                "INSERT INTO weekly_plans (year, week, plan_json) VALUES (?, ?, ?)",
+                (2026, 42, '{"jan":["morning"]}'),
+            )
+            con.execute("DROP TABLE IF EXISTS walk_completion_dogs")
+            con.execute("DROP TABLE IF EXISTS dog_compatibility")
+            con.execute("DROP TABLE IF EXISTS dog_care_share")
+            con.execute("DROP TABLE IF EXISTS dogs")
+
+        migrated = Database(db_file)
+
+        completions = migrated.list_walk_completions(jan["id"])
+        assert [(row["date"], row["slot"]) for row in completions] == [
+            ("2026-10-12", "morning")
+        ]
+        with migrated._connect() as con:
+            tables = {
+                row[0]
+                for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            assert {
+                "dogs",
+                "dog_compatibility",
+                "dog_care_share",
+                "walk_completion_dogs",
+            } <= tables
+            plan = con.execute(
+                "SELECT plan_json FROM weekly_plans WHERE year = 2026 AND week = 42"
+            ).fetchone()[0]
+            share = con.execute(
+                "SELECT enabled, token_version FROM dog_care_share WHERE id = 1"
+            ).fetchone()
+        assert plan == '{"jan":["morning"]}'
+        assert tuple(share) == (0, 1)
+
     def test_takeover_status_migration_preserves_requests(self, tmp_path):
         db_file = tmp_path / "takeovers.sqlite3"
         db = Database(db_file)
@@ -366,6 +409,25 @@ class TestWalkCoordination:
 
 
 class TestWalkCompletions:
+    def test_completion_listing_includes_only_recorded_dogs(self, tmp_path):
+        db = Database(tmp_path / "completion-dogs.sqlite3")
+        jan = db.add_person("Jan")
+        rex = db.add_dog("Rex")
+        bella = db.add_dog("Bella")
+        db.add_walk_completion(
+            jan["id"], "2026-10-12", "morning", "manual", dog_ids=[bella["id"], rex["id"]]
+        )
+        db.add_walk_completion(jan["id"], "2026-10-13", "morning", "manual")
+
+        completions = db.list_walk_completions(jan["id"])
+
+        assert completions[0]["dog_ids"] == [rex["id"], bella["id"]]
+        assert completions[0]["dog_names"] == ["Rex", "Bella"]
+        assert completions[1]["dog_ids"] == []
+        assert completions[1]["dog_names"] == []
+        db.delete_dog(rex["id"])
+        assert db.list_walk_completions(jan["id"])[0]["dog_names"] == ["Bella"]
+
     def test_unique_and_remove(self, tmp_path):
         db = Database(tmp_path / "walks.sqlite3")
         jan = db.add_person("Jan")
@@ -441,3 +503,87 @@ class TestWeekdayPrefs:
         db.set_pref(p["id"], 1, "morning", 2)
         db.delete_person(p["id"])
         assert db.prefs_all() == {}
+
+
+class TestDogProfiles:
+    def test_profile_crud_compatibility_and_delete_cleanup(self, tmp_path):
+        db = Database(tmp_path / "dogs.sqlite3")
+        jan = db.add_person("Jan")
+        first = db.add_dog("  Bello  ", feeding_instructions="Morgens füttern")
+        second = db.add_dog("Mila")
+        db.add_walk_completion(jan["id"], "2026-10-12", "morning", "manual")
+        with db._connect() as con:
+            completion_id = con.execute(
+                "SELECT id FROM walk_completions WHERE person_id = ?",
+                (jan["id"],),
+            ).fetchone()[0]
+
+        updated = db.update_dog(
+            first["id"], name="Bello", allergies="Nüsse", walk_notes="An der Leine"
+        )
+        assert updated["feeding_instructions"] == "Morgens füttern"
+        assert updated["allergies"] == "Nüsse"
+        assert db.set_dog_compatibility(first["id"], [second["id"], first["id"]])
+        assert db.are_dogs_compatible(first["id"], second["id"])
+        assert db.are_dogs_compatible(second["id"], first["id"])
+        assert db.are_dogs_compatible(first["id"], first["id"])
+        assert db.list_dogs()[0]["compatible_dog_ids"] == [second["id"]]
+        with db._connect() as con:
+            con.execute(
+                "INSERT INTO walk_completion_dogs (completion_id, dog_id) VALUES (?, ?)",
+                (completion_id, first["id"]),
+            )
+
+        assert db.delete_dog(first["id"])
+        assert not db.delete_dog(first["id"])
+        assert not db.are_dogs_compatible(first["id"], second["id"])
+        assert db.get_dog(second["id"])["compatible_dog_ids"] == []
+        assert db.list_walk_completions(jan["id"])[0]["date"] == "2026-10-12"
+        with db._connect() as con:
+            assert con.execute("SELECT count(*) FROM walk_completion_dogs").fetchone()[0] == 0
+
+    def test_completion_assignments_and_share_state(self, tmp_path):
+        db = Database(tmp_path / "dog-assignments.sqlite3")
+        jan = db.add_person("Jan")
+        dog = db.add_dog("Bello")
+        db.add_walk_completion(jan["id"], "2026-10-12", "morning", "manual")
+
+        assert db.set_completion_dogs(
+            jan["id"], "2026-10-12", "morning", [dog["id"], dog["id"]]
+        )
+        assert db.completion_dog_ids(jan["id"], "2026-10-12", "morning") == [dog["id"]]
+        assert not db.set_completion_dogs(jan["id"], "2026-10-13", "morning", [])
+        assert db.dog_care_share_state() == {"enabled": 0, "token_version": 1}
+        assert db.enable_dog_care_share() == 1
+        assert db.dog_care_share_is_valid(1)
+        assert db.revoke_dog_care_share() == 2
+        assert not db.dog_care_share_is_valid(1)
+        assert db.dog_care_share_state() == {"enabled": 0, "token_version": 2}
+
+    def test_shared_completion_dog_assignments_are_atomic(self, tmp_path):
+        db = Database(tmp_path / "shared-dog-assignments.sqlite3")
+        jan = db.add_person("Jan")
+        laura = db.add_person("Laura")
+        bello = db.add_dog("Bello")
+        mila = db.add_dog("Mila")
+
+        shared = db.add_shared_walk_completions(
+            jan["id"],
+            "2026-10-12",
+            "morning",
+            [laura["id"]],
+            dog_ids_by_person={jan["id"]: [bello["id"]], laura["id"]: [mila["id"]]},
+        )
+        assert shared["created"]
+        assert db.completion_dog_ids(jan["id"], "2026-10-12", "morning") == [bello["id"]]
+        assert db.completion_dog_ids(laura["id"], "2026-10-12", "morning") == [mila["id"]]
+
+        with pytest.raises(sqlite3.IntegrityError):
+            db.add_shared_walk_completions(
+                jan["id"],
+                "2026-10-13",
+                "morning",
+                [laura["id"]],
+                dog_ids_by_person={jan["id"]: [bello["id"]], laura["id"]: [999]},
+            )
+        assert not db.walk_completion_exists("2026-10-13", "morning")

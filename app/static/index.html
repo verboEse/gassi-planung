@@ -5,7 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>🐕 Gassi-Planung</title>
-  <link rel="stylesheet" href="/static/style.css?v=17">
+  <link rel="stylesheet" href="/static/style.css?v=18">
 </head>
 
 <body>
@@ -48,6 +48,9 @@
   </main>
 
   <main id="appContent" hidden>
+    <nav class="app-actions" aria-label="Ansichten">
+      <button id="dogCareButton" class="secondary" type="button" hidden>Hundepflege</button>
+    </nav>
     <button id="planHomeButton" class="secondary view-home" type="button" hidden>Zurück zum Plan</button>
 
     <div id="planView">
@@ -172,6 +175,47 @@
       </details>
     </div>
 
+    <div id="dogCareView" hidden>
+      <section class="card">
+        <h2>Hundepflege</h2>
+        <form id="dogForm" class="account-form">
+          <input id="dogId" type="hidden">
+          <label>Name
+            <input id="dogName" type="text" maxlength="100" required>
+          </label>
+          <label>Fütterung
+            <textarea id="dogFeeding" rows="3" maxlength="5000"></textarea>
+          </label>
+          <label>Medikamente
+            <textarea id="dogMedication" rows="3" maxlength="5000"></textarea>
+          </label>
+          <label>Allergien
+            <textarea id="dogAllergies" rows="3" maxlength="5000"></textarea>
+          </label>
+          <label>Tierarztkontakt
+            <textarea id="dogVeterinary" rows="2" maxlength="2000"></textarea>
+          </label>
+          <label>Gassi-Hinweise
+            <textarea id="dogWalkNotes" rows="3" maxlength="5000"></textarea>
+          </label>
+          <div class="dog-form-actions">
+            <button type="submit">Hund speichern</button>
+            <button id="cancelDogEdit" class="secondary" type="button" hidden>Abbrechen</button>
+          </div>
+        </form>
+      </section>
+      <div id="dogList" class="dog-list"></div>
+      <section class="card" id="dogShareSection">
+        <h2>Pflegeinformationen teilen</h2>
+        <p id="dogShareStatus" class="hint" role="status"></p>
+        <div class="dog-share-actions">
+          <button id="dogShareToggleButton" type="button">Freigabe aktivieren</button>
+          <input id="dogShareUrl" type="url" readonly aria-label="Hundepflege-Link" hidden>
+          <button id="copyDogShareUrl" class="secondary" type="button" hidden>Link kopieren</button>
+        </div>
+      </section>
+    </div>
+
     <div id="badgesView" hidden>
       <section class="card badge-overview" id="badgeOverview">
         <div class="badge-heading">
@@ -228,6 +272,15 @@
         aria-label="Abbrechen">✖️</button>
     </div>
   </dialog>
+  <dialog id="dogSelectionDialog" aria-labelledby="dogSelectionTitle">
+    <h2 id="dogSelectionTitle">Hunde für die Runde</h2>
+    <p id="dogSelectionMessage" class="hint"></p>
+    <div id="dogSelectionFields" class="dog-selection-fields"></div>
+    <div class="walk-controls">
+      <button id="dogSelectionConfirmButton" type="button">Weiter</button>
+      <button id="dogSelectionCancelButton" class="secondary" type="button">Abbrechen</button>
+    </div>
+  </dialog>
   <div id="toast" class="toast" hidden></div>
   <dialog id="takeoverApprovalDialog" aria-labelledby="takeoverApprovalTitle">
     <h2 id="takeoverApprovalTitle">Übernahme freigeben?</h2>
@@ -239,7 +292,7 @@
         aria-label="Abbrechen">✖️</button>
     </div>
   </dialog>
-  <script src="/static/app.js?v=23"></script>
+  <script src="/static/app.js?v=24"></script>
 </body>
 
 </html>

@@ -32,6 +32,10 @@ Wochenplan** und stellt ihn als Tabelle dar.
 - 🐾 Übernahme und gemeinsame Runden: Eine andere Person kann eine geplante Runde
   mit Zustimmung übernehmen. Gemeinsam erfasste Runden zählen für jede beteiligte
   Person und schalten gemeinsame Runden- sowie Gruppengrößen-Abzeichen frei.
+- 🐕 Hundepflegeprofile mit Fütterung, Medikamenten, Allergien, Tierarztkontakt
+  und Gassi-Hinweisen. Für Abschlüsse werden Hunde pro Person ausgewählt und
+  Kompatibilität wird geprüft; Gäste sehen die Pflegeinfos über einen separaten,
+  widerrufbaren Nur-Lese-Link.
 - 👤 Profil-Tab mit lokalem Avatar-Upload, Level, Abzeichenkatalog, saisonalem
   Rückblick und persönlichen Anzeige-/Erinnerungseinstellungen. Saisonabzeichen
   werden bis sechs Monate im Voraus gezeigt; noch nicht erreichte Abzeichen sind

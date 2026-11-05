@@ -116,6 +116,62 @@ CREATE INDEX IF NOT EXISTS idx_walk_completions_person_date
 ON walk_completions (person_id, walk_date)
 """
 
+DOGS_DDL = """
+CREATE TABLE IF NOT EXISTS dogs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    feeding_instructions TEXT NOT NULL DEFAULT '',
+    medication_notes TEXT NOT NULL DEFAULT '',
+    allergies TEXT NOT NULL DEFAULT '',
+    veterinary_contact TEXT NOT NULL DEFAULT '',
+    walk_notes TEXT NOT NULL DEFAULT ''
+)
+"""
+
+DOG_PROFILE_FIELDS = (
+    "name",
+    "feeding_instructions",
+    "medication_notes",
+    "allergies",
+    "veterinary_contact",
+    "walk_notes",
+)
+
+DOG_COMPATIBILITY_DDL = """
+CREATE TABLE IF NOT EXISTS dog_compatibility (
+    dog_id INTEGER NOT NULL REFERENCES dogs(id) ON DELETE CASCADE,
+    compatible_dog_id INTEGER NOT NULL REFERENCES dogs(id) ON DELETE CASCADE,
+    PRIMARY KEY (dog_id, compatible_dog_id),
+    CHECK (dog_id < compatible_dog_id)
+)
+"""
+
+DOG_COMPATIBILITY_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_dog_compatibility_compatible_dog
+ON dog_compatibility (compatible_dog_id)
+"""
+
+DOG_CARE_SHARE_DDL = """
+CREATE TABLE IF NOT EXISTS dog_care_share (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
+    token_version INTEGER NOT NULL DEFAULT 1 CHECK (token_version > 0)
+)
+"""
+
+WALK_COMPLETION_DOGS_DDL = """
+CREATE TABLE IF NOT EXISTS walk_completion_dogs (
+    completion_id INTEGER NOT NULL REFERENCES walk_completions(id) ON DELETE CASCADE,
+    dog_id INTEGER NOT NULL REFERENCES dogs(id) ON DELETE CASCADE,
+    PRIMARY KEY (completion_id, dog_id)
+)
+"""
+
+WALK_COMPLETION_DOGS_INDEX_DDL = """
+CREATE INDEX IF NOT EXISTS idx_walk_completion_dogs_dog
+ON walk_completion_dogs (dog_id)
+"""
+
 ACTIVE_WALKS_DDL = """
 CREATE TABLE IF NOT EXISTS active_walks (
     person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
@@ -362,6 +418,13 @@ class Database:
                     "INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))"
                 )
             con.execute(WALK_COMPLETIONS_INDEX_DDL)
+            con.execute(DOGS_DDL)
+            con.execute(DOG_COMPATIBILITY_DDL)
+            con.execute(DOG_COMPATIBILITY_INDEX_DDL)
+            con.execute(DOG_CARE_SHARE_DDL)
+            con.execute("INSERT OR IGNORE INTO dog_care_share (id) VALUES (1)")
+            con.execute(WALK_COMPLETION_DOGS_DDL)
+            con.execute(WALK_COMPLETION_DOGS_INDEX_DDL)
             con.execute(ACTIVE_WALKS_DDL)
             active_walk_cols = {
                 row[1] for row in con.execute("PRAGMA table_info(active_walks)")
@@ -1030,6 +1093,164 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_dogs(self) -> list[dict]:
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT id, name, feeding_instructions, medication_notes, allergies, "
+                "veterinary_contact, walk_notes FROM dogs ORDER BY id"
+            ).fetchall()
+            pairs = con.execute(
+                "SELECT dog_id, compatible_dog_id FROM dog_compatibility"
+            ).fetchall()
+        dogs = [dict(row) | {"compatible_dog_ids": []} for row in rows]
+        by_id = {dog["id"]: dog for dog in dogs}
+        for pair in pairs:
+            by_id[pair["dog_id"]]["compatible_dog_ids"].append(pair["compatible_dog_id"])
+            by_id[pair["compatible_dog_id"]]["compatible_dog_ids"].append(pair["dog_id"])
+        for dog in dogs:
+            dog["compatible_dog_ids"].sort()
+        return dogs
+
+    def get_dog(self, dog_id: int) -> dict | None:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT id, name, feeding_instructions, medication_notes, allergies, "
+                "veterinary_contact, walk_notes FROM dogs WHERE id = ?",
+                (dog_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            dog = dict(row)
+            pairs = con.execute(
+                "SELECT dog_id, compatible_dog_id FROM dog_compatibility "
+                "WHERE dog_id = ? OR compatible_dog_id = ?",
+                (dog_id, dog_id),
+            ).fetchall()
+        dog["compatible_dog_ids"] = sorted(
+            pair["compatible_dog_id"] if pair["dog_id"] == dog_id else pair["dog_id"]
+            for pair in pairs
+        )
+        return dog
+
+    def add_dog(
+        self,
+        name: str,
+        feeding_instructions: str = "",
+        medication_notes: str = "",
+        allergies: str = "",
+        veterinary_contact: str = "",
+        walk_notes: str = "",
+    ) -> dict:
+        name = name.strip()
+        if not name:
+            raise ValueError("Name darf nicht leer sein")
+        with self._connect() as con:
+            cur = con.execute(
+                "INSERT INTO dogs (name, feeding_instructions, medication_notes, allergies, "
+                "veterinary_contact, walk_notes) VALUES (?, ?, ?, ?, ?, ?)",
+                (name, feeding_instructions, medication_notes, allergies, veterinary_contact, walk_notes),
+            )
+            dog_id = cur.lastrowid
+        assert dog_id is not None
+        dog = self.get_dog(dog_id)
+        assert dog is not None
+        return dog
+
+    def update_dog(self, dog_id: int, **fields: str) -> dict | None:
+        if not fields:
+            return self.get_dog(dog_id)
+        if set(fields) - set(DOG_PROFILE_FIELDS):
+            raise ValueError("Unbekanntes Hundefeld")
+        if any(not isinstance(value, str) for value in fields.values()):
+            raise ValueError("Hundefelder müssen Text enthalten")
+        if "name" in fields:
+            fields["name"] = fields["name"].strip()
+            if not fields["name"]:
+                raise ValueError("Name darf nicht leer sein")
+        with self._connect() as con:
+            cur = con.execute(
+                "UPDATE dogs SET "
+                + ", ".join(f"{field} = ?" for field in fields)
+                + " WHERE id = ?",
+                (*fields.values(), dog_id),
+            )
+        return self.get_dog(dog_id) if cur.rowcount else None
+
+    def delete_dog(self, dog_id: int) -> bool:
+        with self._connect() as con:
+            cur = con.execute("DELETE FROM dogs WHERE id = ?", (dog_id,))
+        return cur.rowcount > 0
+
+    def set_dog_compatibility(self, dog_id: int, compatible_dog_ids: list[int]) -> bool:
+        compatible_ids = set(compatible_dog_ids) - {dog_id}
+        dog_ids = {dog_id, *compatible_ids}
+        placeholders = ", ".join("?" for _ in dog_ids)
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            rows = con.execute(
+                f"SELECT id FROM dogs WHERE id IN ({placeholders})", tuple(dog_ids)
+            ).fetchall()
+            if {row["id"] for row in rows} != dog_ids:
+                return False
+            con.execute(
+                "DELETE FROM dog_compatibility WHERE dog_id = ? OR compatible_dog_id = ?",
+                (dog_id, dog_id),
+            )
+            con.executemany(
+                "INSERT INTO dog_compatibility (dog_id, compatible_dog_id) VALUES (?, ?)",
+                [(min(dog_id, other_id), max(dog_id, other_id)) for other_id in compatible_ids],
+            )
+        return True
+
+    def are_dogs_compatible(self, dog_id: int, other_dog_id: int) -> bool:
+        if dog_id == other_dog_id:
+            return self.get_dog(dog_id) is not None
+        first_id, second_id = sorted((dog_id, other_dog_id))
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM dog_compatibility WHERE dog_id = ? AND compatible_dog_id = ?",
+                (first_id, second_id),
+            ).fetchone()
+        return row is not None
+
+    def dog_care_share_state(self) -> dict:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT enabled, token_version FROM dog_care_share WHERE id = 1"
+            ).fetchone()
+        assert row is not None
+        return dict(row)
+
+    def enable_dog_care_share(self) -> int:
+        with self._connect() as con:
+            con.execute("UPDATE dog_care_share SET enabled = 1 WHERE id = 1")
+            row = con.execute(
+                "SELECT token_version FROM dog_care_share WHERE id = 1"
+            ).fetchone()
+        assert row is not None
+        return row["token_version"]
+
+    def revoke_dog_care_share(self) -> int:
+        with self._connect() as con:
+            con.execute(
+                "UPDATE dog_care_share SET enabled = 0, token_version = token_version + 1 "
+                "WHERE id = 1"
+            )
+            row = con.execute(
+                "SELECT token_version FROM dog_care_share WHERE id = 1"
+            ).fetchone()
+        assert row is not None
+        return row["token_version"]
+
+    def dog_care_share_is_valid(self, token_version: int) -> bool:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT 1 FROM dog_care_share WHERE id = 1 AND enabled = 1 "
+                "AND token_version = ?",
+                (token_version,),
+            ).fetchone()
+        return row is not None
+
     def create_walk_takeover_request(
         self,
         walk_date: str,
@@ -1156,6 +1377,7 @@ class Database:
         participant_ids: list[int],
         source: str = "plan",
         off_plan_person_ids: set[int] | None = None,
+        dog_ids_by_person: dict[int, list[int]] | None = None,
     ) -> dict:
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         created = False
@@ -1163,11 +1385,15 @@ class Database:
             con.execute("BEGIN IMMEDIATE")
             return self._add_shared_walk_completions(
                 con, owner_id, walk_date, slot, participant_ids, created_at, source,
-                off_plan_person_ids,
+                off_plan_person_ids, dog_ids_by_person,
             )
 
     def complete_walk_takeover_as_shared(
-        self, request_id: int, assignee_id: int, decided_at: str
+        self,
+        request_id: int,
+        assignee_id: int,
+        decided_at: str,
+        dog_ids_by_person: dict[int, list[int]] | None = None,
     ) -> dict | None:
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -1194,6 +1420,7 @@ class Database:
                 [request["requester_id"]],
                 decided_at,
                 off_plan_person_ids={request["requester_id"]},
+                dog_ids_by_person=dog_ids_by_person,
             )
             updated = con.execute(
                 """UPDATE walk_takeover_requests SET status = 'shared', decided_at = ?
@@ -1218,10 +1445,13 @@ class Database:
         created_at: str,
         source: str = "plan",
         off_plan_person_ids: set[int] | None = None,
+        dog_ids_by_person: dict[int, list[int]] | None = None,
     ) -> dict:
         participants = list(dict.fromkeys([owner_id, *participant_ids]))
         if len(participants) < 2:
             raise ValueError("Eine gemeinsame Runde braucht mindestens zwei Teilnehmende")
+        if dog_ids_by_person is not None and set(dog_ids_by_person) != set(participants):
+            raise ValueError("Für alle Teilnehmenden muss eine Hundeauswahl vorliegen")
         group = con.execute(
             "SELECT id, created_by FROM shared_walks WHERE walk_date = ? AND slot = ?",
             (walk_date, slot),
@@ -1241,12 +1471,12 @@ class Database:
             group_id = group["id"]
         for person_id in participants:
             existing = con.execute(
-                """SELECT shared_walk_id FROM walk_completions
+                """SELECT id, shared_walk_id FROM walk_completions
                    WHERE person_id = ? AND walk_date = ? AND slot = ?""",
                 (person_id, walk_date, slot),
             ).fetchone()
             if existing is None:
-                con.execute(
+                cur = con.execute(
                     """INSERT INTO walk_completions
                        (person_id, walk_date, slot, source, off_plan, created_at, shared_walk_id)
                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
@@ -1256,23 +1486,74 @@ class Database:
                         created_at, group_id,
                     ),
                 )
+                completion_id = cur.lastrowid
                 created = True
-            elif existing["shared_walk_id"] is None:
-                con.execute(
-                    """UPDATE walk_completions SET shared_walk_id = ?
-                       WHERE person_id = ? AND walk_date = ? AND slot = ?""",
-                    (group_id, person_id, walk_date, slot),
+            else:
+                completion_id = existing["id"]
+                if existing["shared_walk_id"] is None:
+                    con.execute(
+                        """UPDATE walk_completions SET shared_walk_id = ?
+                           WHERE person_id = ? AND walk_date = ? AND slot = ?""",
+                        (group_id, person_id, walk_date, slot),
+                    )
+                    created = True
+                elif existing["shared_walk_id"] != group_id:
+                    raise ValueError(
+                        "Abschluss gehört bereits zu einer anderen gemeinsamen Runde"
+                    )
+            if dog_ids_by_person is not None:
+                self._replace_completion_dogs(
+                    con, completion_id, dog_ids_by_person[person_id]
                 )
-                created = True
-            elif existing["shared_walk_id"] != group_id:
-                raise ValueError("Abschluss gehört bereits zu einer anderen gemeinsamen Runde")
         rows = con.execute(
-                """SELECT person_id, walk_date AS date, slot, source, off_plan,
-                             created_at, shared_walk_id
+            """SELECT person_id, walk_date AS date, slot, source, off_plan,
+                       created_at, shared_walk_id
                FROM walk_completions WHERE shared_walk_id = ? ORDER BY person_id""",
             (group_id,),
         ).fetchall()
-        return {"shared_walk_id": group_id, "created": created, "completions": [dict(row) for row in rows]}
+        return {
+            "shared_walk_id": group_id,
+            "created": created,
+            "completions": [dict(row) for row in rows],
+        }
+
+    @staticmethod
+    def _replace_completion_dogs(
+        con: sqlite3.Connection, completion_id: int, dog_ids: list[int]
+    ) -> None:
+        con.execute(
+            "DELETE FROM walk_completion_dogs WHERE completion_id = ?", (completion_id,)
+        )
+        con.executemany(
+            "INSERT INTO walk_completion_dogs (completion_id, dog_id) VALUES (?, ?)",
+            [(completion_id, dog_id) for dog_id in dict.fromkeys(dog_ids)],
+        )
+
+    def set_completion_dogs(
+        self, person_id: int, walk_date: str, slot: str, dog_ids: list[int]
+    ) -> bool:
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            row = con.execute(
+                "SELECT id FROM walk_completions "
+                "WHERE person_id = ? AND walk_date = ? AND slot = ?",
+                (person_id, walk_date, slot),
+            ).fetchone()
+            if row is None:
+                return False
+            self._replace_completion_dogs(con, row["id"], dog_ids)
+        return True
+
+    def completion_dog_ids(self, person_id: int, walk_date: str, slot: str) -> list[int]:
+        with self._connect() as con:
+            rows = con.execute(
+                """SELECT d.dog_id FROM walk_completion_dogs d
+                   JOIN walk_completions c ON c.id = d.completion_id
+                   WHERE c.person_id = ? AND c.walk_date = ? AND c.slot = ?
+                   ORDER BY d.dog_id""",
+                (person_id, walk_date, slot),
+            ).fetchall()
+        return [row["dog_id"] for row in rows]
 
     def add_walk_completion(
         self,
@@ -1281,9 +1562,11 @@ class Database:
         slot: str,
         source: str,
         off_plan: bool = False,
+        dog_ids: list[int] | None = None,
     ) -> bool:
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
             cur = con.execute(
                 """
                 INSERT OR IGNORE INTO walk_completions
@@ -1292,6 +1575,14 @@ class Database:
                 """,
                 (person_id, walk_date, slot, source, int(off_plan), created_at),
             )
+            if dog_ids is not None:
+                row = con.execute(
+                    "SELECT id FROM walk_completions "
+                    "WHERE person_id = ? AND walk_date = ? AND slot = ?",
+                    (person_id, walk_date, slot),
+                ).fetchone()
+                if row is not None:
+                    self._replace_completion_dogs(con, row["id"], dog_ids)
         return cur.rowcount > 0
 
     def shared_walk_participant_ids(self, walk_date: str, slot: str) -> list[int]:
@@ -1342,22 +1633,47 @@ class Database:
 
     def list_walk_completions(self, person_id: int | None = None) -> list[dict]:
         query = """
-            SELECT c.person_id, c.walk_date AS date, c.slot, c.source, c.off_plan, c.created_at,
+            SELECT c.id AS completion_id, c.person_id, c.walk_date AS date, c.slot,
+                   c.source, c.off_plan, c.created_at,
                    c.shared_walk_id,
                    CASE WHEN c.shared_walk_id IS NULL THEN 0 ELSE (
                        SELECT count(*) FROM walk_completions members
                        WHERE members.shared_walk_id = c.shared_walk_id
-                   ) END AS shared_group_size
+                   ) END AS shared_group_size,
+                   completion_dogs.dog_id, dogs.name AS dog_name
             FROM walk_completions c
+            LEFT JOIN walk_completion_dogs completion_dogs
+                ON completion_dogs.completion_id = c.id
+            LEFT JOIN dogs ON dogs.id = completion_dogs.dog_id
         """
         params: tuple[int, ...] = ()
         if person_id is not None:
-            query += " WHERE person_id = ?"
+            query += " WHERE c.person_id = ?"
             params = (person_id,)
-        query += " ORDER BY walk_date, slot, person_id"
+        query += " ORDER BY c.walk_date, c.slot, c.person_id, c.id, completion_dogs.dog_id"
         with self._connect() as con:
             rows = con.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+        completions_by_id = {}
+        completions = []
+        for row in rows:
+            completion_id = row["completion_id"]
+            completion = completions_by_id.get(completion_id)
+            if completion is None:
+                completion = {
+                    key: row[key]
+                    for key in (
+                        "person_id", "date", "slot", "source", "off_plan", "created_at",
+                        "shared_walk_id", "shared_group_size",
+                    )
+                }
+                completion["dog_ids"] = []
+                completion["dog_names"] = []
+                completions_by_id[completion_id] = completion
+                completions.append(completion)
+            if row["dog_id"] is not None:
+                completion["dog_ids"].append(row["dog_id"])
+                completion["dog_names"].append(row["dog_name"])
+        return completions
 
     def active_walk(self, person_id: int) -> dict | None:
         with self._connect() as con:
@@ -1397,8 +1713,11 @@ class Database:
         assert row is not None
         return dict(row)
 
-    def finish_walk(self, person_id: int, ended_at: str) -> dict | None:
+    def finish_walk(
+        self, person_id: int, ended_at: str, dog_ids: list[int] | None = None
+    ) -> dict | None:
         with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 """
                 SELECT person_id, walk_date AS date, slot, off_plan
@@ -1416,6 +1735,14 @@ class Database:
                 """,
                 (row["person_id"], row["date"], row["slot"], row["off_plan"], ended_at),
             )
+            if dog_ids is not None:
+                completion = con.execute(
+                    "SELECT id FROM walk_completions "
+                    "WHERE person_id = ? AND walk_date = ? AND slot = ?",
+                    (row["person_id"], row["date"], row["slot"]),
+                ).fetchone()
+                if completion is not None:
+                    self._replace_completion_dogs(con, completion["id"], dog_ids)
             con.execute("DELETE FROM active_walks WHERE person_id = ?", (person_id,))
         return {
             "person_id": row["person_id"],
