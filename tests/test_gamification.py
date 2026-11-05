@@ -153,7 +153,29 @@ def test_secret_slot_streak_breaks_on_any_missed_slot():
     )
     assert missed_noon["best_streak"] == 10
     assert missed_noon["current_streak"] == 0
-    assert missed_noon["reached_now"]
+    assert not missed_noon["reached_now"]
+
+    recovery_completions = completions + [
+        completion("2026-01-04", "evening"),
+        completion("2026-01-05", "morning"),
+        completion("2026-01-05", "noon"),
+        completion("2026-01-05", "evening"),
+        completion("2026-01-06", "morning"),
+        completion("2026-01-06", "noon"),
+        completion("2026-01-06", "evening"),
+        completion("2026-01-07", "morning"),
+        completion("2026-01-07", "noon"),
+        completion("2026-01-07", "evening"),
+    ]
+    recovered = badge_progress(
+        definition,
+        recovery_completions,
+        True,
+        as_of=datetime(2026, 1, 7, 23),
+    )
+    assert recovered["current_streak"] == 10
+    assert recovered["best_streak"] == 10
+    assert recovered["reached_now"]
 
 
 def test_off_plan_badge_counts_distinct_walks_without_a_streak():
