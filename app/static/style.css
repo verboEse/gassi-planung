@@ -83,7 +83,7 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
 .auth-modes .active { background: var(--accent); color: #fff; }
 #authForm, .account-form { display: grid; gap: 0.8rem; }
 #authForm label, .account-form label { display: grid; gap: 0.3rem; }
-#authForm input, .account-form input, .account-form select {
+#authForm input, .account-form input, .account-form select, .account-form textarea {
   background: #222b34;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -91,12 +91,50 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
   padding: 0.5rem 0.6rem;
   font-size: 0.95rem;
 }
+.account-form textarea { resize: vertical; font: inherit; }
+.app-actions, .dog-form-actions, .dog-share-actions, .dog-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.app-actions { margin-bottom: 0.25rem; }
+.dog-share-actions input {
+  flex: 1 1 16rem;
+  min-width: 0;
+  background: #222b34;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 0.4rem 0.6rem;
+}
 #adminSection > label { display: grid; gap: 0.3rem; max-width: 24rem; }
 .admin-completion-form { border-top: 1px solid var(--border); padding-top: 1rem; }
 .admin-completion-form h3 { margin: 0; }
 .admin-completion-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.8rem; }
 .admin-completion-fields label, .admin-completion-form > label { display: grid; gap: 0.3rem; }
 .admin-completion-form select[multiple] { min-height: 7rem; }
+.dog-list, .dog-selection-fields { display: grid; gap: 0.75rem; }
+.dog-card { display: grid; gap: 0.75rem; }
+.dog-card h3 { margin: 0; }
+.dog-details { display: grid; grid-template-columns: minmax(8rem, 0.35fr) minmax(0, 1fr); gap: 0.35rem 0.75rem; margin: 0; }
+.dog-details dt { font-weight: 600; }
+.dog-details dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.dog-compatibilities, .dog-selection-group {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.65rem 0.8rem;
+}
+.dog-compatibilities legend, .dog-selection-group legend { padding: 0 0.3rem; font-weight: 600; }
+.dog-compatibility-options, .dog-choice-list { display: grid; gap: 0.35rem; }
+.dog-compatibility-options label, .dog-choice-list label { display: flex; align-items: center; gap: 0.5rem; }
+.dog-compatibility-options input, .dog-choice-list input { width: 1rem; height: 1rem; margin: 0; }
+.dog-selection-group[hidden] { display: none; }
+.guest-dogs { display: grid; gap: 0.75rem; }
+.guest-dog h2 { overflow-wrap: anywhere; }
+.guest-dog-detail + .guest-dog-detail { border-top: 1px solid var(--border); padding-top: 0.65rem; margin-top: 0.65rem; }
+.guest-dog-detail p { margin: 0.25rem 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .admin-activity-heading { display: flex; align-items: center; justify-content: space-between; }
 #adminActivity { max-height: 24rem; overflow: auto; }
 
@@ -184,6 +222,8 @@ td.unassigned {
 }
 .completion-list { display: grid; gap: 0.35rem; margin-top: 0.8rem; }
 .completion-row { display: flex; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.completion-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; color: var(--muted); font-size: 0.85rem; }
+.completion-dogs { flex: 1 1 10rem; overflow-wrap: anywhere; }
 .profile-card { display: grid; gap: 0.75rem; }
 .profile-avatar-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .profile-card label { display: flex; align-items: center; gap: 0.5rem; }

@@ -207,6 +207,28 @@ class PersonIn(BaseModel):
     color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
 
 
+class DogCreateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    feeding_instructions: str = Field(default="", max_length=5000)
+    medication_notes: str = Field(default="", max_length=5000)
+    allergies: str = Field(default="", max_length=5000)
+    veterinary_contact: str = Field(default="", max_length=2000)
+    walk_notes: str = Field(default="", max_length=5000)
+
+
+class DogUpdateIn(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    feeding_instructions: str | None = Field(default=None, max_length=5000)
+    medication_notes: str | None = Field(default=None, max_length=5000)
+    allergies: str | None = Field(default=None, max_length=5000)
+    veterinary_contact: str | None = Field(default=None, max_length=2000)
+    walk_notes: str | None = Field(default=None, max_length=5000)
+
+
+class DogCompatibilityIn(BaseModel):
+    compatible_dog_ids: list[int] = Field(default_factory=list)
+
+
 class PrefIn(BaseModel):
     person_id: int
     weekday: int = Field(ge=1, le=7)  # ISO-Wochentag: 1=Montag … 7=Sonntag
@@ -239,6 +261,7 @@ class AdminCompletionIn(BaseModel):
     date: dt_date
     slot: str
     person_ids: list[int] = Field(min_length=1)
+    dog_ids_by_person: dict[int, list[int]] = Field(default_factory=dict)
 
 
 class ProfilePreferencesIn(BaseModel):
@@ -267,6 +290,11 @@ class WalkCompletionIn(BaseModel):
     source: Literal["plan"]
     person_id: int | None = Field(default=None, ge=1)
     co_walker_ids: list[int] = Field(default_factory=list)
+    dog_ids_by_person: dict[int, list[int]] = Field(default_factory=dict)
+
+
+class WalkEndIn(BaseModel):
+    dog_ids: list[int] = Field(default_factory=list)
 
 
 class WalkTakeoverRequestIn(BaseModel):
@@ -282,6 +310,7 @@ class WalkTakeoverDecisionIn(BaseModel):
 
 class WalkTakeoverGroupIn(BaseModel):
     person_id: int | None = Field(default=None, ge=1)
+    dog_ids_by_person: dict[int, list[int]] = Field(default_factory=dict)
 
 
 def week_dates(year: int, week: int) -> list[str]:
@@ -328,6 +357,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         raise ValueError("GASSI_SESSION_SECRET muss mindestens 32 Bytes lang sein")
     invite_code = os.environ.get("GASSI_INVITE_CODE", "")
     serializer = URLSafeSerializer(session_secret, salt="gassi-calendar")
+    dog_care_serializer = URLSafeSerializer(session_secret, salt="gassi-dog-care")
     app.state.auth_enabled = auth_enabled
     if auth_enabled:
         app.add_middleware(
@@ -356,6 +386,23 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         version = db.calendar_person_version(person_id)
         token = serializer.dumps([person_id, version])
         return f"{base_url}/api/calendar/{token}.ics"
+
+    def dog_care_share_url(token_version: int) -> str:
+        token = dog_care_serializer.dumps([token_version])
+        return f"{base_url}/dog-care/{token}"
+
+    def valid_dog_care_share_token(share_token: str) -> bool:
+        try:
+            payload = dog_care_serializer.loads(share_token)
+            if (
+                not isinstance(payload, list)
+                or len(payload) != 1
+                or type(payload[0]) is not int
+            ):
+                return False
+        except (BadSignature, TypeError, ValueError):
+            return False
+        return db.dog_care_share_is_valid(payload[0])
 
     def resolve_week(year: int | None, week: int | None) -> tuple[int, int, list[str]]:
         if year is None or week is None:
@@ -434,6 +481,78 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             profile["level_name"] = db.level_definition(progress["level"])["name"]
             profile["points"] = progress["points"]
             return profile
+
+        @app.get("/api/dogs")
+        def list_dogs(account: dict | None = Depends(require_account)):
+            assert account is not None
+            return {"dogs": db.list_dogs()}
+
+        @app.post("/api/dogs", status_code=201)
+        def add_dog(
+            body: DogCreateIn,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            try:
+                return db.add_dog(**body.model_dump())
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
+
+        @app.patch("/api/dogs/{dog_id}")
+        def update_dog(
+            dog_id: int,
+            body: DogUpdateIn,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            fields = body.model_dump(exclude_unset=True)
+            if any(value is None for value in fields.values()):
+                raise HTTPException(422, "Hundefelder dürfen nicht null sein")
+            try:
+                dog = db.update_dog(dog_id, **fields)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc))
+            if dog is None:
+                raise HTTPException(404, "Hund nicht gefunden")
+            return dog
+
+        @app.put("/api/dogs/{dog_id}/compatibility")
+        def set_dog_compatibility(
+            dog_id: int,
+            body: DogCompatibilityIn,
+            account: dict | None = Depends(require_account),
+        ):
+            assert account is not None
+            if not db.set_dog_compatibility(dog_id, body.compatible_dog_ids):
+                raise HTTPException(404, "Hund nicht gefunden")
+            return db.get_dog(dog_id)
+
+        @app.get("/api/dog-care-share")
+        def get_dog_care_share(account: dict | None = Depends(require_account)):
+            assert account is not None
+            share = db.dog_care_share_state()
+            enabled = bool(share["enabled"])
+            return {
+                "enabled": enabled,
+                "share_url": dog_care_share_url(share["token_version"]) if enabled else None,
+            }
+
+        @app.post("/api/dog-care-share")
+        def enable_dog_care_share(account: dict | None = Depends(require_account)):
+            assert account is not None
+            token_version = db.enable_dog_care_share()
+            return {"share_url": dog_care_share_url(token_version)}
+
+        @app.delete("/api/dog-care-share", status_code=204)
+        def revoke_dog_care_share(account: dict | None = Depends(require_account)):
+            assert account is not None
+            db.revoke_dog_care_share()
+
+        @app.delete("/api/dogs/{dog_id}", status_code=204)
+        def delete_dog(dog_id: int, account: dict | None = Depends(require_account)):
+            assert account is not None
+            if not db.delete_dog(dog_id):
+                raise HTTPException(404, "Hund nicht gefunden")
 
         @app.patch("/api/profile/preferences")
         def update_profile_preferences(
@@ -716,6 +835,9 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 if person is None:
                     raise HTTPException(404, "Teilnehmer nicht gefunden")
                 persons.append(person)
+            dog_ids_by_person = validate_dog_ids_by_person(
+                body.person_ids, body.dog_ids_by_person
+            )
             names = [person["name"] for person in persons]
             walk_date = body.date.isoformat()
             off_plan_ids = off_plan_people(body.person_ids, body.date, body.slot)
@@ -729,16 +851,23 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                         body.person_ids[1:],
                         source="manual",
                         off_plan_person_ids=off_plan_ids,
+                        dog_ids_by_person=dog_ids_by_person,
                     )
                 except ValueError as exc:
                     raise HTTPException(409, str(exc))
+                except sqlite3.IntegrityError:
+                    raise HTTPException(404, "Hund nicht gefunden")
                 created = result["created"]
                 shared_walk_id = result["shared_walk_id"]
             else:
-                created = db.add_walk_completion(
-                    body.person_ids[0], walk_date, body.slot, "manual",
-                    off_plan=body.person_ids[0] in off_plan_ids,
-                )
+                try:
+                    created = db.add_walk_completion(
+                        body.person_ids[0], walk_date, body.slot, "manual",
+                        off_plan=body.person_ids[0] in off_plan_ids,
+                        dog_ids=dog_ids_by_person[body.person_ids[0]],
+                    )
+                except sqlite3.IntegrityError:
+                    raise HTTPException(404, "Hund nicht gefunden")
 
             if created:
                 for person_id in body.person_ids:
@@ -995,6 +1124,38 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         assignee_id = planned_assignment_person_id(walk_date, slot)
         return {person_id for person_id in person_ids if person_id != assignee_id}
 
+    def validate_dog_ids_by_person(
+        person_ids: list[int], dog_ids_by_person: dict[int, list[int]]
+    ) -> dict[int, list[int]]:
+        participant_ids = list(dict.fromkeys(person_ids))
+        participant_set = set(participant_ids)
+        if set(dog_ids_by_person) - participant_set:
+            raise HTTPException(422, "Hundeauswahl enthält eine nicht teilnehmende Person")
+
+        dogs = db.list_dogs()
+        if dogs and set(dog_ids_by_person) != participant_set:
+            raise HTTPException(422, "Für alle Teilnehmenden muss eine Hundeauswahl vorliegen")
+        known_dog_ids = {dog["id"] for dog in dogs}
+        normalized: dict[int, list[int]] = {}
+        selected_dog_ids: set[int] = set()
+        for person_id in participant_ids:
+            dog_ids = dog_ids_by_person.get(person_id, [])
+            if len(set(dog_ids)) != len(dog_ids):
+                raise HTTPException(422, "Ein Hund darf pro Person nur einmal ausgewählt werden")
+            if set(dog_ids) - known_dog_ids:
+                raise HTTPException(404, "Hund nicht gefunden")
+            if dogs and not dog_ids:
+                raise HTTPException(422, "Für alle Teilnehmenden muss mindestens ein Hund ausgewählt werden")
+            normalized[person_id] = dog_ids
+            selected_dog_ids.update(dog_ids)
+
+        ordered_dog_ids = sorted(selected_dog_ids)
+        for index, dog_id in enumerate(ordered_dog_ids):
+            for other_dog_id in ordered_dog_ids[index + 1:]:
+                if not db.are_dogs_compatible(dog_id, other_dog_id):
+                    raise HTTPException(422, "Ausgewählte Hunde dürfen nicht gemeinsam laufen")
+        return normalized
+
     def require_planned_assignment_person_id(walk_date: dt_date, slot: str) -> int:
         assignee_id = planned_assignment_person_id(walk_date, slot)
         if assignee_id is None:
@@ -1116,11 +1277,18 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             raise HTTPException(404, "Übernahmeanfrage nicht gefunden oder bereits entschieden")
         walk_date = dt_date.fromisoformat(request["walk_date"])
         assert_original_assignee(assignee_id, walk_date, request["slot"])
-        result = db.complete_walk_takeover_as_shared(
-            request_id,
-            assignee_id,
-            berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+        dog_ids_by_person = validate_dog_ids_by_person(
+            [assignee_id, request["requester_id"]], body.dog_ids_by_person
         )
+        try:
+            result = db.complete_walk_takeover_as_shared(
+                request_id,
+                assignee_id,
+                berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+                dog_ids_by_person=dog_ids_by_person,
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(404, "Hund nicht gefunden")
         if result is None:
             raise HTTPException(409, "Die Runde wurde bereits abgeschlossen oder die Anfrage entschieden")
         for completion in result["completions"]:
@@ -1226,14 +1394,24 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
 
     @app.post("/api/walks/end")
     def end_walk(
+        body: WalkEndIn | None = None,
         person_id: int | None = Query(None, ge=1),
         account: dict | None = Depends(require_account),
     ):
         owner_id = completion_person_id(person_id, account)
-        result = db.finish_walk(
-            owner_id,
-            berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
-        )
+        if db.active_walk(owner_id) is None:
+            raise HTTPException(404, "Keine aktive Gassi-Runde vorhanden")
+        dog_ids = validate_dog_ids_by_person(
+            [owner_id], {owner_id: body.dog_ids if body else []}
+        )[owner_id]
+        try:
+            result = db.finish_walk(
+                owner_id,
+                berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+                dog_ids=dog_ids,
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(404, "Hund nicht gefunden")
         if result is None:
             raise HTTPException(404, "Keine aktive Gassi-Runde vorhanden")
         sync_person_badges(owner_id)
@@ -1256,6 +1434,11 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             for co_walker_id in body.co_walker_ids:
                 if db.get_person(co_walker_id) is None:
                     raise HTTPException(404, "Teilnehmer nicht gefunden")
+        participant_ids = [person_id, *body.co_walker_ids]
+        dog_ids_by_person = validate_dog_ids_by_person(
+            participant_ids, body.dog_ids_by_person
+        )
+        if body.co_walker_ids:
             try:
                 result = db.add_shared_walk_completions(
                     person_id,
@@ -1265,9 +1448,12 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                     off_plan_person_ids=off_plan_people(
                         [person_id, *body.co_walker_ids], body.date, body.slot
                     ),
+                    dog_ids_by_person=dog_ids_by_person,
                 )
             except ValueError as exc:
                 raise HTTPException(409, str(exc))
+            except sqlite3.IntegrityError:
+                raise HTTPException(404, "Hund nicht gefunden")
             for completion in result["completions"]:
                 sync_person_badges(completion["person_id"])
             return {
@@ -1278,13 +1464,17 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             }
         if body.source == "plan":
             assert_can_complete_planned_walk(person_id, body.date, body.slot)
-        created = db.add_walk_completion(
-            person_id,
-            body.date.isoformat(),
-            body.slot,
-            body.source,
-            off_plan=person_id in off_plan_people([person_id], body.date, body.slot),
-        )
+        try:
+            created = db.add_walk_completion(
+                person_id,
+                body.date.isoformat(),
+                body.slot,
+                body.source,
+                off_plan=person_id in off_plan_people([person_id], body.date, body.slot),
+                dog_ids=dog_ids_by_person[person_id],
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(404, "Hund nicht gefunden")
         sync_person_badges(person_id)
         return {"ok": True, "created": created}
 
@@ -1305,6 +1495,22 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         for affected_person_id in affected_people:
             sync_person_badges(affected_person_id)
         return {"ok": True}
+
+    @app.get("/dog-care/{share_token}", include_in_schema=False)
+    def dog_care_guest_page(share_token: str):
+        if not valid_dog_care_share_token(share_token):
+            raise HTTPException(404, "Hundepflege-Link nicht gefunden")
+        return FileResponse(
+            STATIC_DIR / "dog-care.html",
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/api/dog-care/{share_token}")
+    def shared_dog_care(share_token: str, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        if not valid_dog_care_share_token(share_token):
+            raise HTTPException(404, "Hundepflege-Link nicht gefunden")
+        return {"dogs": db.list_dogs()}
 
     @app.api_route("/api/calendar/{calendar_token}.ics", methods=["GET", "HEAD"])
     def person_calendar(calendar_token: str, request: Request):

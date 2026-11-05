@@ -654,6 +654,140 @@ def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):
         raise AssertionError("must retain at least one admin")
 
 
+def test_dog_profiles_are_available_to_authenticated_members(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "dog-profiles.sqlite3"
+    db = Database(db_path)
+    admin = db.add_account("Jan", hash_password("jan family password"))
+    member = db.add_account("Laura", hash_password("laura family password"))
+    assert db.set_admin(admin["name"], True)
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.get("/api/dogs").status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": member["name"], "password": "laura family password",
+        }).status_code == 200
+        first = client.post("/api/dogs", json={
+            "name": "Bello", "feeding_instructions": "Morgens füttern",
+        })
+        second = client.post("/api/dogs", json={"name": "Mila"})
+        assert first.status_code == 201, first.text
+        assert second.status_code == 201, second.text
+        first_id = first.json()["id"]
+        second_id = second.json()["id"]
+
+        updated = client.patch(f"/api/dogs/{first_id}", json={"allergies": "Nüsse"})
+        assert updated.status_code == 200
+        assert updated.json()["feeding_instructions"] == "Morgens füttern"
+        assert updated.json()["allergies"] == "Nüsse"
+        compatible = client.put(
+            f"/api/dogs/{first_id}/compatibility",
+            json={"compatible_dog_ids": [second_id]},
+        )
+        assert compatible.status_code == 200
+        assert compatible.json()["compatible_dog_ids"] == [second_id]
+        assert client.get("/api/dogs").json()["dogs"][1]["compatible_dog_ids"] == [first_id]
+
+        assert client.post("/auth/logout").status_code == 204
+        assert client.post("/auth/login", json={
+            "display_name": admin["name"], "password": "jan family password",
+        }).status_code == 200
+        assert client.get("/api/dogs").status_code == 200
+        assert client.delete(f"/api/dogs/{first_id}").status_code == 204
+        assert client.get("/api/dogs").json()["dogs"][0]["compatible_dog_ids"] == []
+
+
+def test_dog_care_share_is_read_only_revocable_and_independent(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    monkeypatch.setenv("GASSI_BASE_URL", "https://gassiplan.example")
+    db_path = tmp_path / "dog-care-share.sqlite3"
+    db = Database(db_path)
+    member = db.add_account("Laura", hash_password("laura family password"))
+    dog = db.add_dog("Mila", allergies="Nüsse")
+    app = create_app(str(db_path))
+
+    with TestClient(app, base_url="https://testserver") as client:
+        assert client.post("/api/dog-care-share").status_code == 401
+        assert client.get("/api/dog-care-share").status_code == 401
+        assert client.post("/auth/login", json={
+            "display_name": member["name"], "password": "laura family password",
+        }).status_code == 200
+        calendar_url = client.get("/api/me").json()["calendar_url"]
+        calendar_path = urlsplit(calendar_url).path
+        shared = client.post("/api/dog-care-share")
+        assert shared.status_code == 200
+        share_path = urlsplit(shared.json()["share_url"]).path
+        assert share_path.startswith("/dog-care/")
+        share_token = share_path.rsplit("/", 1)[-1]
+        share_state = client.get("/api/dog-care-share")
+        assert share_state.json() == {"enabled": True, "share_url": shared.json()["share_url"]}
+
+        guest_page = client.get(share_path)
+        assert guest_page.status_code == 200
+        assert guest_page.headers["cache-control"] == "no-store"
+        assert guest_page.headers["content-type"].startswith("text/html")
+
+        guest_response = client.get(f"/api/dog-care/{share_token}")
+        assert guest_response.status_code == 200
+        assert guest_response.headers["cache-control"] == "no-store"
+        assert guest_response.json() == {"dogs": [{**dog, "compatible_dog_ids": []}]}
+        assert client.put(f"/api/dog-care/{share_token}", json={}).status_code == 405
+
+        rotated_calendar_url = client.post("/api/me/calendar-token").json()["calendar_url"]
+        assert client.get(calendar_path).status_code == 404
+        assert client.get(urlsplit(rotated_calendar_url).path).status_code == 200
+        assert client.get(share_path).status_code == 200
+        assert client.get(f"/api/dog-care/{share_token}").status_code == 200
+
+        assert client.delete("/api/dog-care-share").status_code == 204
+        assert client.get(share_path).status_code == 404
+        assert client.get(f"/api/dog-care/{share_token}").status_code == 404
+        assert client.get("/api/dog-care-share").json() == {"enabled": False, "share_url": None}
+        assert client.get(urlsplit(rotated_calendar_url).path).status_code == 200
+
+
+def test_admin_completion_validates_and_persists_dog_assignments(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 10, 12, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "admin-dog-completions.sqlite3"
+    db = Database(db_path)
+    admin = db.add_account("Jan", hash_password("jan family password"))
+    member = db.add_account("Laura", hash_password("laura family password"))
+    assert db.set_admin(admin["name"], True)
+    first_dog = db.add_dog("Mila")
+    second_dog = db.add_dog("Bello")
+    app = create_app(str(db_path))
+    body = {
+        "kind": "group",
+        "date": "2026-10-11",
+        "slot": "morning",
+        "person_ids": [admin["id"], member["id"]],
+        "dog_ids_by_person": {
+            admin["id"]: [first_dog["id"]],
+            member["id"]: [second_dog["id"]],
+        },
+    }
+
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": admin["name"], "password": "jan family password",
+        }).status_code == 200
+        incompatible = client.post("/api/admin/completions", json=body)
+        assert incompatible.status_code == 422
+        assert db.list_walk_completions() == []
+        assert db.set_dog_compatibility(first_dog["id"], [second_dog["id"]])
+        completed = client.post("/api/admin/completions", json=body)
+        assert completed.status_code == 200, completed.text
+
+    assert db.completion_dog_ids(admin["id"], "2026-10-11", "morning") == [first_dog["id"]]
+    assert db.completion_dog_ids(member["id"], "2026-10-11", "morning") == [second_dog["id"]]
+
+
 def test_secret_badge_participant_avatar_requires_viewer_unlock(tmp_path, monkeypatch):
     monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
     db_path = tmp_path / "secret-avatar.sqlite3"

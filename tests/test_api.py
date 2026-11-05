@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import main as main_module
+from app.db import Database
 from app.main import create_app, week_dates
 
 
@@ -165,6 +166,146 @@ class TestGamification:
         assert ended.status_code == 200 and ended.json()["created"]
         assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 404
         assert client.get("/api/gamification").json()["persons"][0]["points"] == 1
+
+    def test_completion_dog_assignments_validate_and_persist_per_person(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 1))
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        db = Database(tmp_path / "dog-completions.sqlite3")
+        app = create_app(str(tmp_path / "dog-completions.sqlite3"), auth_enabled=False)
+
+        with TestClient(app) as dog_client:
+            people = [add_person(dog_client, name) for name in ("Jan", "Laura")]
+            first_dog = db.add_dog("Mila")
+            second_dog = db.add_dog("Bello")
+            jan1 = next(
+                day for day in dog_client.get("/api/plan?year=2026&week=1").json()["days"]
+                if day["date"] == "2026-01-01"
+            )
+            owner_id = jan1["slots"]["morning"]["person_id"]
+            co_walker_id = next(person["id"] for person in people if person["id"] != owner_id)
+            shared = {
+                "person_id": owner_id,
+                "date": "2026-01-01",
+                "slot": "morning",
+                "source": "plan",
+                "co_walker_ids": [co_walker_id],
+            }
+
+            assert dog_client.put("/api/completions", json=shared).status_code == 422
+            selected = {
+                **shared,
+                "dog_ids_by_person": {
+                    owner_id: [first_dog["id"]],
+                    co_walker_id: [second_dog["id"]],
+                },
+            }
+            assert dog_client.put("/api/completions", json={
+                **selected,
+                "dog_ids_by_person": {
+                    owner_id: [999], co_walker_id: [second_dog["id"]],
+                },
+            }).status_code == 404
+            assert dog_client.put("/api/completions", json=selected).status_code == 422
+            assert db.list_walk_completions() == []
+
+            assert db.set_dog_compatibility(first_dog["id"], [second_dog["id"]])
+            completed = dog_client.put("/api/completions", json=selected)
+            assert completed.status_code == 200, completed.text
+            assert db.completion_dog_ids(owner_id, "2026-01-01", "morning") == [first_dog["id"]]
+            assert db.completion_dog_ids(co_walker_id, "2026-01-01", "morning") == [second_dog["id"]]
+
+            monkeypatch.setattr(
+                main_module,
+                "berlin_now",
+                lambda: datetime(2026, 1, 2, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+            )
+            jan2 = next(
+                day for day in dog_client.get("/api/plan?year=2026&week=1").json()["days"]
+                if day["date"] == "2026-01-02"
+            )
+            single_id = jan2["slots"]["morning"]["person_id"]
+            single = dog_client.put("/api/completions", json={
+                "person_id": single_id,
+                "date": "2026-01-02",
+                "slot": "morning",
+                "source": "plan",
+                "dog_ids_by_person": {single_id: [first_dog["id"]]},
+            })
+            assert single.status_code == 200, single.text
+            assert db.completion_dog_ids(single_id, "2026-01-02", "morning") == [first_dog["id"]]
+
+            monkeypatch.setattr(
+                main_module,
+                "berlin_now",
+                lambda: datetime(2026, 1, 3, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+            )
+            jan3 = next(
+                day for day in dog_client.get("/api/plan?year=2026&week=1").json()["days"]
+                if day["date"] == "2026-01-03"
+            )
+            walker_id = jan3["slots"]["morning"]["person_id"]
+            walk_url = f"/api/walks/start?person_id={walker_id}"
+            assert dog_client.post(walk_url).status_code == 200
+            end_url = f"/api/walks/end?person_id={walker_id}"
+            assert dog_client.post(end_url).status_code == 422
+            assert db.active_walk(walker_id) is not None
+            assert dog_client.post(end_url, json={"dog_ids": [999]}).status_code == 404
+            assert db.active_walk(walker_id) is not None
+            ended = dog_client.post(end_url, json={"dog_ids": [first_dog["id"]]})
+            assert ended.status_code == 200, ended.text
+            assert db.completion_dog_ids(walker_id, "2026-01-03", "morning") == [first_dog["id"]]
+
+    def test_group_takeover_dog_validation_is_atomic(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 1))
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 3, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        db = Database(tmp_path / "dog-takeover.sqlite3")
+        app = create_app(str(tmp_path / "dog-takeover.sqlite3"), auth_enabled=False)
+
+        with TestClient(app) as dog_client:
+            people = [add_person(dog_client, name) for name in ("Jan", "Laura")]
+            first_dog = db.add_dog("Mila")
+            second_dog = db.add_dog("Bello")
+            jan3 = next(
+                day for day in dog_client.get("/api/plan?year=2026&week=1").json()["days"]
+                if day["date"] == "2026-01-03"
+            )
+            assignee_id = jan3["slots"]["morning"]["person_id"]
+            requester_id = next(person["id"] for person in people if person["id"] != assignee_id)
+            requested = dog_client.post("/api/walk-takeovers", json={
+                "person_id": requester_id,
+                "date": "2026-01-03",
+                "slot": "morning",
+            })
+            assert requested.status_code == 201, requested.text
+            request_id = requested.json()["request"]["id"]
+            body = {
+                "person_id": assignee_id,
+                "dog_ids_by_person": {
+                    assignee_id: [first_dog["id"]],
+                    requester_id: [second_dog["id"]],
+                },
+            }
+
+            incompatible = dog_client.post(
+                f"/api/walk-takeovers/{request_id}/group", json=body
+            )
+            assert incompatible.status_code == 422
+            assert db.list_walk_completions() == []
+            assert db.set_dog_compatibility(first_dog["id"], [second_dog["id"]])
+            completed = dog_client.post(
+                f"/api/walk-takeovers/{request_id}/group", json=body
+            )
+            assert completed.status_code == 200, completed.text
+            assert db.completion_dog_ids(assignee_id, "2026-01-03", "morning") == [first_dog["id"]]
+            assert db.completion_dog_ids(requester_id, "2026-01-03", "morning") == [second_dog["id"]]
 
     def test_calendar_link_start_requires_matching_walk(self, client, monkeypatch):
         person = add_person(client, "Jan")
