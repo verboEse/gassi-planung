@@ -286,6 +286,15 @@ class TestWalkCoordination:
             INSERT INTO walk_completions
                 (person_id, walk_date, slot, source, created_at)
             VALUES (1, '2026-10-12', 'morning', 'plan', '2026-10-12T06:00:00+00:00');
+            CREATE TABLE active_walks (
+                person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+                walk_date TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                started_at TEXT NOT NULL
+            );
+            INSERT INTO active_walks
+                (person_id, walk_date, slot, started_at)
+            VALUES (1, '2026-10-13', 'noon', '2026-10-13T12:00:00+00:00');
             """
         )
         con.commit()
@@ -296,6 +305,13 @@ class TestWalkCoordination:
         assert completion["date"] == "2026-10-12"
         assert completion["shared_walk_id"] is None
         assert completion["shared_group_size"] == 0
+        assert completion["off_plan"] == 0
+        result = db.finish_walk(1, "2026-10-13T14:00:00+00:00")
+        assert result and result["off_plan"] is False
+        migrated_completion = next(
+            row for row in db.list_walk_completions(1) if row["date"] == "2026-10-13"
+        )
+        assert migrated_completion["off_plan"] == 0
 
     def test_takeovers_allow_one_active_request_per_slot(self, tmp_path):
         db = Database(tmp_path / "takeovers.sqlite3")
@@ -357,13 +373,16 @@ class TestWalkCompletions:
 
         assert db.add_walk_completion(jan["id"], "2026-10-12", "morning", "plan")
         assert not db.add_walk_completion(jan["id"], "2026-10-12", "morning", "manual")
-        assert db.add_walk_completion(jan["id"], "2026-10-12", "noon", "manual")
+        assert db.add_walk_completion(
+            jan["id"], "2026-10-12", "noon", "manual", off_plan=True
+        )
         rows = db.list_walk_completions(jan["id"])
         assert [(row["date"], row["slot"], row["source"]) for row in rows] == [
             ("2026-10-12", "morning", "plan"),
             ("2026-10-12", "noon", "manual"),
         ]
         assert all(row["created_at"] for row in rows)
+        assert [row["off_plan"] for row in rows] == [0, 1]
         assert db.list_walk_completions(laura["id"]) == []
         assert db.remove_walk_completion(jan["id"], "2026-10-12", "morning")
         assert not db.remove_walk_completion(jan["id"], "2026-10-12", "morning")
@@ -372,13 +391,18 @@ class TestWalkCompletions:
     def test_session_start_and_finish(self, tmp_path):
         db = Database(tmp_path / "walks.sqlite3")
         jan = db.add_person("Jan")
-        active = db.start_walk(jan["id"], "2026-10-12", "morning", "2026-10-12T04:30:00+00:00")
+        active = db.start_walk(
+            jan["id"], "2026-10-12", "morning", "2026-10-12T04:30:00+00:00",
+            off_plan=True,
+        )
         assert active["slot"] == "morning"
+        assert active["off_plan"] == 1
         assert db.active_walk(jan["id"])["date"] == "2026-10-12"
         result = db.finish_walk(jan["id"], "2026-10-12T07:00:00+00:00")
         assert result and result["created"]
         assert db.active_walk(jan["id"]) is None
         assert db.list_walk_completions(jan["id"])[0]["source"] == "manual"
+        assert db.list_walk_completions(jan["id"])[0]["off_plan"] == 1
         assert db.finish_walk(jan["id"], "2026-10-12T07:01:00+00:00") is None
 
     def test_badges_can_be_removed(self, tmp_path):

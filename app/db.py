@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS walk_completions (
     walk_date TEXT NOT NULL,
     slot TEXT NOT NULL,
     source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
+    off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1)),
     created_at TEXT NOT NULL,
     shared_walk_id INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL,
     UNIQUE (person_id, walk_date, slot)
@@ -120,7 +121,8 @@ CREATE TABLE IF NOT EXISTS active_walks (
     person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
     walk_date TEXT NOT NULL,
     slot TEXT NOT NULL,
-    started_at TEXT NOT NULL
+    started_at TEXT NOT NULL,
+    off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))
 )
 """
 
@@ -185,6 +187,7 @@ CREATE TABLE IF NOT EXISTS badge_definitions (
     ends_at TEXT,
     retention TEXT NOT NULL CHECK (retention IN ('current-count', 'historical')),
     active INTEGER NOT NULL DEFAULT 1,
+    secret INTEGER NOT NULL DEFAULT 0,
     icon TEXT NOT NULL DEFAULT '',
     art_key TEXT NOT NULL DEFAULT 'seal'
 )
@@ -234,7 +237,11 @@ BADGE_SEEDS = [
     ("fifty-shared-walks", "community-sharing", "Teamgeist 50", "Erledige fünfzig gemeinsame Gassirunden.", "shared-walk-count", '{}', 50, None, None, "current-count", "gold-medal"),
     ("three-person-walk", "community-sharing", "Zu dritt unterwegs", "Geh eine Runde mit genau drei Teilnehmenden.", "group-size", '{"size":3}', 1, None, None, "current-count", "heart-paws"),
     ("four-plus-walk", "community-sharing", "Große Gassi-Gruppe", "Geh eine Runde mit mindestens vier Teilnehmenden.", "group-size", '{"minimum_size":4}', 1, None, None, "current-count", "heart-paws"),
+    ("ten-day-streak", "streaks-habits", "10 Tage am Stück", "Geh an mindestens zehn aufeinanderfolgenden Kalendertagen mindestens eine Runde.", "consecutive-days", '{}', 10, None, None, "current-count", "seven-paws"),
+    ("ten-round-streak", "streaks-habits", "10 Runden am Stück", "Erledige zehn aufeinanderfolgende Slots ohne eine Runde auszulassen.", "consecutive-slots", '{}', 10, None, None, "current-count", "bronze-medal"),
+    ("ten-off-plan-walks", "streaks-habits", "10 Runden außer Plan", "Erledige zehn Runden, für die du laut Plan nicht eingeteilt warst.", "off-plan-count", '{}', 10, None, None, "current-count", "heart-paws"),
 ]
+SECRET_BADGE_IDS = ("ten-day-streak", "ten-round-streak", "ten-off-plan-walks")
 
 SEASONAL_EVENT_SEEDS = [
     ("new-year-walk", "Neujahr", "Neujahrsrunde", "Starte das Jahr mit einer Gassirunde.", 1, 1, "fireworks"),
@@ -349,8 +356,21 @@ class Database:
                     "ALTER TABLE walk_completions ADD COLUMN shared_walk_id "
                     "INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL"
                 )
+            if "off_plan" not in completion_cols:
+                con.execute(
+                    "ALTER TABLE walk_completions ADD COLUMN off_plan "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))"
+                )
             con.execute(WALK_COMPLETIONS_INDEX_DDL)
             con.execute(ACTIVE_WALKS_DDL)
+            active_walk_cols = {
+                row[1] for row in con.execute("PRAGMA table_info(active_walks)")
+            }
+            if "off_plan" not in active_walk_cols:
+                con.execute(
+                    "ALTER TABLE active_walks ADD COLUMN off_plan "
+                    "INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))"
+                )
             con.execute(PUSH_SUBSCRIPTIONS_DDL)
             con.execute(PUSH_SUBSCRIPTIONS_PERSON_INDEX_DDL)
             con.execute(REMINDER_OUTBOX_DDL)
@@ -367,6 +387,11 @@ class Database:
             if "art_key" not in badge_cols:
                 con.execute(
                     "ALTER TABLE badge_definitions ADD COLUMN art_key TEXT NOT NULL DEFAULT 'seal'"
+                )
+            if "secret" not in badge_cols:
+                con.execute(
+                    "ALTER TABLE badge_definitions ADD COLUMN secret "
+                    "INTEGER NOT NULL DEFAULT 0"
                 )
             con.execute(LEVEL_DEFINITIONS_DDL)
             level_cols = {row[1] for row in con.execute("PRAGMA table_info(level_definitions)")}
@@ -390,6 +415,10 @@ class Database:
             con.executemany(
                 "UPDATE badge_definitions SET art_key = ? WHERE id = ?",
                 [(art_key, badge_id) for badge_id, _, _, _, _, _, _, _, _, _, art_key in BADGE_SEEDS],
+            )
+            con.executemany(
+                "UPDATE badge_definitions SET secret = 1 WHERE id = ?",
+                [(badge_id,) for badge_id in SECRET_BADGE_IDS],
             )
             con.executemany(
                 """
@@ -1126,13 +1155,15 @@ class Database:
         slot: str,
         participant_ids: list[int],
         source: str = "plan",
+        off_plan_person_ids: set[int] | None = None,
     ) -> dict:
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         created = False
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
             return self._add_shared_walk_completions(
-                con, owner_id, walk_date, slot, participant_ids, created_at, source
+                con, owner_id, walk_date, slot, participant_ids, created_at, source,
+                off_plan_person_ids,
             )
 
     def complete_walk_takeover_as_shared(
@@ -1162,6 +1193,7 @@ class Database:
                 request["slot"],
                 [request["requester_id"]],
                 decided_at,
+                off_plan_person_ids={request["requester_id"]},
             )
             updated = con.execute(
                 """UPDATE walk_takeover_requests SET status = 'shared', decided_at = ?
@@ -1185,6 +1217,7 @@ class Database:
         participant_ids: list[int],
         created_at: str,
         source: str = "plan",
+        off_plan_person_ids: set[int] | None = None,
     ) -> dict:
         participants = list(dict.fromkeys([owner_id, *participant_ids]))
         if len(participants) < 2:
@@ -1215,9 +1248,13 @@ class Database:
             if existing is None:
                 con.execute(
                     """INSERT INTO walk_completions
-                       (person_id, walk_date, slot, source, created_at, shared_walk_id)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (person_id, walk_date, slot, source, created_at, group_id),
+                       (person_id, walk_date, slot, source, off_plan, created_at, shared_walk_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        person_id, walk_date, slot, source,
+                        int(person_id in (off_plan_person_ids or set())),
+                        created_at, group_id,
+                    ),
                 )
                 created = True
             elif existing["shared_walk_id"] is None:
@@ -1230,24 +1267,30 @@ class Database:
             elif existing["shared_walk_id"] != group_id:
                 raise ValueError("Abschluss gehört bereits zu einer anderen gemeinsamen Runde")
         rows = con.execute(
-            """SELECT person_id, walk_date AS date, slot, source, created_at, shared_walk_id
+                """SELECT person_id, walk_date AS date, slot, source, off_plan,
+                             created_at, shared_walk_id
                FROM walk_completions WHERE shared_walk_id = ? ORDER BY person_id""",
             (group_id,),
         ).fetchall()
         return {"shared_walk_id": group_id, "created": created, "completions": [dict(row) for row in rows]}
 
     def add_walk_completion(
-        self, person_id: int, walk_date: str, slot: str, source: str
+        self,
+        person_id: int,
+        walk_date: str,
+        slot: str,
+        source: str,
+        off_plan: bool = False,
     ) -> bool:
         created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         with self._connect() as con:
             cur = con.execute(
                 """
                 INSERT OR IGNORE INTO walk_completions
-                    (person_id, walk_date, slot, source, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (person_id, walk_date, slot, source, off_plan, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (person_id, walk_date, slot, source, created_at),
+                (person_id, walk_date, slot, source, int(off_plan), created_at),
             )
         return cur.rowcount > 0
 
@@ -1299,7 +1342,7 @@ class Database:
 
     def list_walk_completions(self, person_id: int | None = None) -> list[dict]:
         query = """
-            SELECT c.person_id, c.walk_date AS date, c.slot, c.source, c.created_at,
+            SELECT c.person_id, c.walk_date AS date, c.slot, c.source, c.off_plan, c.created_at,
                    c.shared_walk_id,
                    CASE WHEN c.shared_walk_id IS NULL THEN 0 ELSE (
                        SELECT count(*) FROM walk_completions members
@@ -1327,18 +1370,26 @@ class Database:
             ).fetchone()
         return dict(row) if row else None
 
-    def start_walk(self, person_id: int, walk_date: str, slot: str, started_at: str) -> dict:
+    def start_walk(
+        self,
+        person_id: int,
+        walk_date: str,
+        slot: str,
+        started_at: str,
+        off_plan: bool = False,
+    ) -> dict:
         with self._connect() as con:
             con.execute(
                 """
-                INSERT OR IGNORE INTO active_walks (person_id, walk_date, slot, started_at)
-                VALUES (?, ?, ?, ?)
+                INSERT OR IGNORE INTO active_walks
+                    (person_id, walk_date, slot, started_at, off_plan)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (person_id, walk_date, slot, started_at),
+                (person_id, walk_date, slot, started_at, int(off_plan)),
             )
             row = con.execute(
                 """
-                SELECT person_id, walk_date AS date, slot, started_at
+                SELECT person_id, walk_date AS date, slot, started_at, off_plan
                 FROM active_walks WHERE person_id = ?
                 """,
                 (person_id,),
@@ -1350,7 +1401,7 @@ class Database:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT person_id, walk_date AS date, slot
+                SELECT person_id, walk_date AS date, slot, off_plan
                 FROM active_walks WHERE person_id = ?
                 """,
                 (person_id,),
@@ -1360,10 +1411,10 @@ class Database:
             cur = con.execute(
                 """
                 INSERT OR IGNORE INTO walk_completions
-                    (person_id, walk_date, slot, source, created_at)
-                VALUES (?, ?, ?, 'manual', ?)
+                    (person_id, walk_date, slot, source, off_plan, created_at)
+                VALUES (?, ?, ?, 'manual', ?, ?)
                 """,
-                (row["person_id"], row["date"], row["slot"], ended_at),
+                (row["person_id"], row["date"], row["slot"], row["off_plan"], ended_at),
             )
             con.execute("DELETE FROM active_walks WHERE person_id = ?", (person_id,))
         return {
@@ -1371,6 +1422,7 @@ class Database:
             "date": row["date"],
             "slot": row["slot"],
             "source": "manual",
+            "off_plan": bool(row["off_plan"]),
             "created": cur.rowcount > 0,
         }
 

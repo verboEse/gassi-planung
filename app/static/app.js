@@ -715,7 +715,10 @@ function renderBadgeCatalog() {
       if (badge.show_progress) {
         const progress = document.createElement("span");
         progress.className = "badge-tile-progress";
-        progress.textContent = `${badge.progress}/${badge.target}`;
+        const hasStreak = Number.isInteger(badge.current_streak);
+        progress.textContent = hasStreak
+          ? `${badge.current_streak}/${badge.best_streak}`
+          : `${badge.progress}/${badge.target}`;
         button.appendChild(progress);
       } else if (badge.earned) {
         const earnedMark = document.createElement("span");
@@ -725,7 +728,9 @@ function renderBadgeCatalog() {
         button.appendChild(earnedMark);
       }
       button.setAttribute("aria-label", badge.show_progress
-        ? `${badge.title}, ${badge.earned ? "erreicht" : "Fortschritt"} ${badge.progress} von ${badge.target}`
+        ? Number.isInteger(badge.current_streak)
+          ? `${badge.title}, aktuelle Serie ${badge.current_streak}, Bestwert ${badge.best_streak}`
+          : `${badge.title}, ${badge.earned ? "erreicht" : "Fortschritt"} ${badge.progress} von ${badge.target}`
         : `${badge.title}${badge.earned ? ", freigeschaltet" : ""}`);
       button.onclick = () => navigateApp(`badge/${badge.id}`);
       items.appendChild(button);
@@ -764,13 +769,16 @@ async function loadBadgeDetail(id) {
   document.getElementById("badgeDetailCategory").textContent = badge.category_label;
   document.getElementById("badgeDetailDescription").textContent = badge.description;
   document.getElementById("badgeDetailCondition").textContent = badgeConditionText(badge);
+  const hasStreak = Number.isInteger(badge.current_streak);
   document.getElementById("badgeDetailProgressText").textContent = badge.show_progress
-    ? (badge.earned ? "Freigeschaltet" : `Fortschritt: ${badge.progress}/${badge.target}`)
+    ? (hasStreak
+      ? `Aktuelle Serie: ${badge.current_streak}/${badge.best_streak}`
+      : (badge.earned ? "Freigeschaltet" : `Fortschritt: ${badge.progress}/${badge.target}`))
     : (badge.earned ? "Freigeschaltet" : "Noch nicht freigeschaltet");
   const progress = document.getElementById("badgeDetailProgress");
   progress.hidden = !badge.show_progress;
-  progress.max = Math.max(badge.target, 1);
-  progress.value = badge.progress;
+  progress.max = Math.max(hasStreak ? badge.best_streak : badge.target, 1);
+  progress.value = hasStreak ? badge.current_streak : badge.progress;
   const participants = document.getElementById("badgeParticipants");
   participants.replaceChildren();
   if (badge.participants.length) {

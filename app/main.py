@@ -33,7 +33,7 @@ from itsdangerous import BadSignature, URLSafeSerializer
 from .auth import DUMMY_PASSWORD_HASH, hash_password, verify_password
 from .db import Database
 from .gamification import badge_progress, group_progress, summarize_completions
-from .ical import SLOT_TIMES, build_ics
+from .ical import SLOT_TIMES, WALK_WINDOW_TOLERANCE, build_ics
 from .reminders import (
     dispatch_due_reminders,
     load_vapid_configuration,
@@ -51,7 +51,6 @@ from .scheduler import (
 
 STATIC_DIR = Path(__file__).parent / "static"
 BERLIN = ZoneInfo("Europe/Berlin")
-WALK_WINDOW_TOLERANCE = timedelta(minutes=30)
 MAX_AVATAR_BYTES = 2 * 1024 * 1024
 MAX_AVATAR_DIMENSION = 4096
 logger = logging.getLogger(__name__)
@@ -62,6 +61,17 @@ PUSH_SERVICE_HOSTS = {
     "web.push.apple.com",
 }
 RELEASE_NEWS = (
+    {
+        "id": "0.3.0-secret-badges",
+        "version": "0.3.0",
+        "title": "Neue geheime Abzeichen und Serien-Erfolge",
+        "body": (
+            "Neue geheime Abzeichen belohnen Tages- und Rundenserien sowie Runden "
+            "außerhalb des Plans. Bei Serien siehst du deine aktuelle Serie und deinen "
+            "Bestwert. Eine natürliche Unterbrechung nimmt einen bereits erreichten "
+            "Erfolg nicht zurück."
+        ),
+    },
     {
         "id": "0.2.0-navigation-feedback",
         "version": "0.2.0",
@@ -527,7 +537,10 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
 
         def badge_view(definition: dict, completions: list[dict], earned_ids: set[str]) -> dict:
             result = badge_progress(
-                definition, completions, definition["id"] in earned_ids
+                definition,
+                completions,
+                definition["id"] in earned_ids,
+                as_of=berlin_now(),
             )
             result["condition"] = json.loads(result.pop("condition_json") or "{}")
             result.pop("icon", None)
@@ -568,6 +581,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                     or (item["starts_at"] <= horizon and item["ends_at"] >= today)
                 ]
             badges = [badge_view(item, completions, earned_ids) for item in selected]
+            badges = [badge for badge in badges if not badge["secret"] or badge["earned"]]
             earned_count = sum(badge["earned"] for badge in badges)
             visible_category_ids = {badge["category_id"] for badge in badges}
             categories = [
@@ -577,7 +591,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             return {
                 "categories": categories,
                 "badges": badges,
-                "progress": {"earned": earned_count, "available": len(selected)},
+                "progress": {"earned": earned_count, "available": len(badges)},
                 "view": "history" if history else "current",
             }
 
@@ -588,6 +602,16 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             account: dict | None = Depends(require_account),
         ):
             assert account is not None
+            definition = db.badge_definition(badge_id)
+            if definition is None:
+                raise HTTPException(404, "Profilbild nicht verfügbar")
+            if definition["secret"]:
+                sync_person_badges(account["id"])
+                earned_ids = {
+                    row["badge_id"] for row in db.list_person_badges(account["id"])
+                }
+                if badge_id not in earned_ids:
+                    raise HTTPException(404, "Profilbild nicht verfügbar")
             image = db.badge_participant_avatar(badge_id, person_id)
             if image is None:
                 raise HTTPException(404, "Profilbild nicht verfügbar")
@@ -614,6 +638,8 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             earned_ids = {
                 row["badge_id"] for row in db.list_person_badges(account["id"])
             }
+            if definition["secret"] and badge_id not in earned_ids:
+                raise HTTPException(404, "Abzeichen nicht gefunden")
             return {
                 **badge_view(definition, completions, earned_ids),
                 "participants": db.badge_participants(badge_id),
@@ -692,6 +718,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 persons.append(person)
             names = [person["name"] for person in persons]
             walk_date = body.date.isoformat()
+            off_plan_ids = off_plan_people(body.person_ids, body.date, body.slot)
             shared_walk_id = None
             if body.kind == "group":
                 try:
@@ -701,6 +728,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                         body.slot,
                         body.person_ids[1:],
                         source="manual",
+                        off_plan_person_ids=off_plan_ids,
                     )
                 except ValueError as exc:
                     raise HTTPException(409, str(exc))
@@ -708,7 +736,8 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 shared_walk_id = result["shared_walk_id"]
             else:
                 created = db.add_walk_completion(
-                    body.person_ids[0], walk_date, body.slot, "manual"
+                    body.person_ids[0], walk_date, body.slot, "manual",
+                    off_plan=body.person_ids[0] in off_plan_ids,
                 )
 
             if created:
@@ -959,6 +988,10 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         assignee_id = day["slots"].get(slot, {}).get("person_id") if day else None
         return assignee_id
 
+    def off_plan_people(person_ids: list[int], walk_date: dt_date, slot: str) -> set[int]:
+        assignee_id = planned_assignment_person_id(walk_date, slot)
+        return {person_id for person_id in person_ids if person_id != assignee_id}
+
     def require_planned_assignment_person_id(walk_date: dt_date, slot: str) -> int:
         assignee_id = planned_assignment_person_id(walk_date, slot)
         if assignee_id is None:
@@ -1178,11 +1211,13 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         assert_can_complete_planned_walk(
             owner_id, walk_date, window["slot"]
         )
+        off_plan = owner_id in off_plan_people([owner_id], walk_date, window["slot"])
         active = db.start_walk(
             owner_id,
             window["date"],
             window["slot"],
             berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+            off_plan=off_plan,
         )
         return {"ok": True, "created": True, "active": active}
 
@@ -1220,7 +1255,13 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                     raise HTTPException(404, "Teilnehmer nicht gefunden")
             try:
                 result = db.add_shared_walk_completions(
-                    person_id, body.date.isoformat(), body.slot, body.co_walker_ids
+                    person_id,
+                    body.date.isoformat(),
+                    body.slot,
+                    body.co_walker_ids,
+                    off_plan_person_ids=off_plan_people(
+                        [person_id, *body.co_walker_ids], body.date, body.slot
+                    ),
                 )
             except ValueError as exc:
                 raise HTTPException(409, str(exc))
@@ -1235,7 +1276,11 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         if body.source == "plan":
             assert_can_complete_planned_walk(person_id, body.date, body.slot)
         created = db.add_walk_completion(
-            person_id, body.date.isoformat(), body.slot, body.source
+            person_id,
+            body.date.isoformat(),
+            body.slot,
+            body.source,
+            off_plan=person_id in off_plan_people([person_id], body.date, body.slot),
         )
         sync_person_badges(person_id)
         return {"ok": True, "created": created}

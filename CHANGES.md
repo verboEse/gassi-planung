@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The current app version is maintained in `app/__init__.py`.
 
+## [0.3.0] - 2026-11-05
+
+### Added
+
+- Geheime Abzeichen für Tages- und Rundenserien sowie außerplanmäßige Runden.
+- Serien zeigen aktuelle Folge und Bestwert; natürliche Unterbrechungen erhalten erreichte Erfolge.
+
+### Changed
+
+- Admin-Korrekturen berechnen Serienerfolge anhand der gültigen Abschlüsse neu.
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

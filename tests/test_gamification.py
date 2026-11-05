@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date as dt_date
+from datetime import datetime
 from datetime import timedelta
 
 from app.gamification import badge_progress, level_for_points, summarize_completions
@@ -9,6 +10,16 @@ from app.gamification import badge_progress, level_for_points, summarize_complet
 
 def completion(date: str, slot: str = "morning") -> dict:
     return {"date": date, "slot": slot}
+
+
+def badge_definition(condition_type: str, target: int = 10) -> dict:
+    return {
+        "id": "test-series",
+        "condition_type": condition_type,
+        "condition_json": "{}",
+        "target_value": target,
+        "retention": "current-count",
+    }
 
 
 def test_points_and_progressive_level_boundaries():
@@ -86,3 +97,96 @@ def test_shared_walk_badges_use_unique_participations_and_group_size():
         [{**shared[0], "shared_group_size": 3}],
         False,
     )["reached_now"]
+
+
+def test_secret_day_streak_tracks_current_and_best_and_recalculates_after_correction():
+    start = dt_date(2026, 1, 1)
+    completions = [
+        completion((start + timedelta(days=day)).isoformat()) for day in range(10)
+    ]
+    completions.append(completion("2026-01-12"))
+    result = badge_progress(
+        badge_definition("consecutive-days"),
+        completions,
+        True,
+        as_of=datetime(2026, 1, 12, 12),
+    )
+    assert result["current_streak"] == 1
+    assert result["best_streak"] == 10
+    assert result["reached_now"]
+
+    corrected = [row for row in completions if row["date"] != "2026-01-05"]
+    result = badge_progress(
+        badge_definition("consecutive-days"),
+        corrected,
+        True,
+        as_of=datetime(2026, 1, 12, 12),
+    )
+    assert result["best_streak"] == 5
+    assert not result["reached_now"]
+
+
+def test_secret_slot_streak_breaks_on_any_missed_slot():
+    slots = ["morning", "noon", "evening"]
+    completions = [
+        completion(f"2026-01-{day:02d}", slot)
+        for day in range(1, 5)
+        for slot in slots
+    ][:10]
+    definition = badge_definition("consecutive-slots")
+
+    reached = badge_progress(
+        definition,
+        completions,
+        False,
+        as_of=datetime(2026, 1, 4, 9),
+    )
+    assert reached["best_streak"] == 10
+    assert reached["current_streak"] == 10
+    assert reached["reached_now"]
+
+    missed_noon = badge_progress(
+        definition,
+        completions,
+        True,
+        as_of=datetime(2026, 1, 4, 16),
+    )
+    assert missed_noon["best_streak"] == 10
+    assert missed_noon["current_streak"] == 0
+    assert missed_noon["reached_now"]
+
+
+def test_off_plan_badge_counts_distinct_walks_without_a_streak():
+    completions = []
+    start = dt_date(2026, 1, 1)
+    for day in range(20):
+        row = completion((start + timedelta(days=day)).isoformat())
+        completions.append({**row, "off_plan": int(day % 2 == 0)})
+    completions.append({**completions[0]})
+
+    result = badge_progress(
+        badge_definition("off-plan-count"), completions, False
+    )
+    assert result["progress"] == 10
+    assert result["reached_now"]
+
+
+def test_repeated_day_streak_reports_current_progress_against_previous_best():
+    start = dt_date(2026, 1, 1)
+    previous_best = [
+        completion((start + timedelta(days=day)).isoformat()) for day in range(23)
+    ]
+    repeated_start = start + timedelta(days=24)
+    repeated = [
+        completion((repeated_start + timedelta(days=day)).isoformat())
+        for day in range(11)
+    ]
+
+    result = badge_progress(
+        badge_definition("consecutive-days"),
+        previous_best + repeated,
+        True,
+        as_of=datetime(2026, 2, 4, 12),
+    )
+    assert result["current_streak"] == 11
+    assert result["best_streak"] == 23

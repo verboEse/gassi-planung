@@ -11,7 +11,7 @@ Anwendungsfall überschaubar und so bleibt die App dependency-arm.
 from __future__ import annotations
 
 from datetime import date as dt_date
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from .scheduler import SLOT_LABELS, Assignment
@@ -24,6 +24,7 @@ SLOT_TIMES: dict[str, tuple[tuple[int, int], tuple[int, int]]] = {
     "noon": ((13, 30), (15, 30)),
     "evening": ((20, 0), (22, 0)),
 }
+WALK_WINDOW_TOLERANCE = timedelta(minutes=30)
 
 PRODID = "-//verboEse//gassi-planung//DE"
 

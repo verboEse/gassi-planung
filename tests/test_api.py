@@ -356,6 +356,10 @@ class TestGamification:
         assert {row["person_id"] for row in confirmed.json()["completions"]} == {
             requester["id"], assignee["id"],
         }
+        assert {
+            row["person_id"]: row["off_plan"]
+            for row in confirmed.json()["completions"]
+        } == {requester["id"]: 1, assignee["id"]: 0}
         assert len({row["shared_walk_id"] for row in confirmed.json()["completions"]}) == 1
         assert pushes[-1][1] == requester["id"]
         assert pushes[-1][2]["title"] == "Gemeinsame Gassirunde bestätigt"
