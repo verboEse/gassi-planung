@@ -175,13 +175,15 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         news = client.get("/api/news").json()["news"]
-        assert len(news) == 1
-        assert news[0]["version"] == "0.2.0"
-        assert news[0]["title"] == "Mehr Übersicht und Feedback direkt in der App"
-        assert "Abzeichen" in news[0]["body"]
-        assert "Verbesserungsvorschläge" in news[0]["body"]
-        assert "Admin" not in news[0]["title"] + news[0]["body"]
-        assert client.post(f"/api/news/{news[0]['id']}/read").status_code == 204
+        assert len(news) == 2
+        assert news[0]["version"] == "0.3.0"
+        assert news[0]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
+        assert "Bestwert" in news[0]["body"]
+        assert "Mehr Übersicht" in news[1]["title"]
+        assert "Verbesserungsvorschläge" in news[1]["body"]
+        assert all("Admin" not in item["title"] + item["body"] for item in news)
+        for item in news:
+            assert client.post(f"/api/news/{item['id']}/read").status_code == 204
         assert client.get("/api/news").json()["news"] == []
 
         assert client.post("/auth/logout").status_code == 204
@@ -195,8 +197,9 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Admin", "password": "admin family password",
         }).status_code == 200
         admin_news = client.get("/api/news").json()["news"]
-        assert len(admin_news) == 1
-        assert client.post(f"/api/news/{admin_news[0]['id']}/read").status_code == 204
+        assert len(admin_news) == 2
+        for item in admin_news:
+            assert client.post(f"/api/news/{item['id']}/read").status_code == 204
         assert client.get("/api/news").json()["news"] == []
         assert client.post("/auth/logout").status_code == 204
         assert client.post("/auth/login", json={
@@ -488,6 +491,46 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
         assert client.get("/api/badges/missing").status_code == 404
 
 
+def test_secret_streak_badge_is_hidden_then_revoked_after_correction(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 11, 3, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    db_path = tmp_path / "secret-badges.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    start = datetime(2026, 10, 1).date()
+    app = create_app(str(db_path))
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        current = client.get("/api/badges").json()
+        current_ids = {badge["id"] for badge in current["badges"]}
+        assert "ten-day-streak" not in current_ids
+        assert client.get("/api/badges/ten-day-streak").status_code == 404
+
+        for day in range(10):
+            walk_date = (start + timedelta(days=day)).isoformat()
+            assert db.add_walk_completion(
+                jan["id"], walk_date, "morning", "manual"
+            )
+        current = client.get("/api/badges").json()
+        day_streak = next(
+            badge for badge in current["badges"] if badge["id"] == "ten-day-streak"
+        )
+        assert day_streak["best_streak"] == 10
+        assert day_streak["current_streak"] == 0
+        assert client.get("/api/badges/ten-day-streak").status_code == 200
+
+        assert client.delete("/api/completions/2026-10-05/morning").status_code == 200
+        current = client.get("/api/badges").json()
+        assert "ten-day-streak" not in {badge["id"] for badge in current["badges"]}
+        assert client.get("/api/badges/ten-day-streak").status_code == 404
+
+
 def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):
     monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 42))
     monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
@@ -544,6 +587,69 @@ def test_admin_console_role_and_admin_api(tmp_path, monkeypatch):
         assert "letzte Admin" in str(exc)
     else:
         raise AssertionError("must retain at least one admin")
+
+
+def test_secret_badge_participant_avatar_requires_viewer_unlock(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "secret-avatar.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    db.add_account("Laura", hash_password("laura family password"))
+    avatar_png = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    )
+    assert db.save_avatar(jan["id"], avatar_png, "image/png")
+    db.award_badges(jan["id"], ["ten-day-streak"])
+
+    app = create_app(str(db_path))
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 200
+        response = client.get(
+            f"/api/badges/ten-day-streak/participants/{jan['id']}/avatar"
+        )
+        assert response.status_code == 404
+
+
+def test_admin_backfill_marks_unassigned_person_off_plan(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 10, 12, 12, 0, tzinfo=ZoneInfo("Europe/Berlin")),
+    )
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "off-plan-completions.sqlite3"
+    db = Database(db_path)
+    admin = db.add_account("Jan", hash_password("jan family password"))
+    participants = [
+        db.add_account(name, hash_password(f"{name.lower()} family password"))
+        for name in ("Laura", "Max")
+    ]
+    assert db.set_admin("Jan", True)
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        plan = client.get("/api/plan?year=2026&week=41").json()
+        day = next(day for day in plan["days"] if day["date"] == "2026-10-11")
+        assigned_id = day["slots"]["morning"].get("person_id")
+        off_plan_person = next(
+            person for person in [admin, *participants]
+            if person["id"] != assigned_id
+        )
+        response = client.post("/api/admin/completions", json={
+            "kind": "normal",
+            "date": "2026-10-11",
+            "slot": "morning",
+            "person_ids": [off_plan_person["id"]],
+        })
+
+    assert response.status_code == 200, response.text
+    completion = db.list_walk_completions(off_plan_person["id"])[0]
+    assert completion["off_plan"] == 1
 
 
 def test_admin_can_backfill_takeover_and_group_walks(tmp_path, monkeypatch):
