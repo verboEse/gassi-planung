@@ -175,12 +175,16 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         news = client.get("/api/news").json()["news"]
-        assert len(news) == 2
-        assert news[0]["version"] == "0.3.0"
-        assert news[0]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
-        assert "Bestwert" in news[0]["body"]
-        assert "Mehr Übersicht" in news[1]["title"]
-        assert "Verbesserungsvorschläge" in news[1]["body"]
+        assert len(news) == 3
+        assert news[0]["version"] == "0.4.0"
+        assert news[0]["title"] == "Gassi-Hinweise vor dem Start"
+        assert "abbrechen" in news[0]["body"]
+        assert news[1]["version"] == "0.3.0"
+        assert news[1]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
+        assert "Bestwert" in news[1]["body"]
+        assert news[2]["version"] == "0.2.0"
+        assert "Mehr Übersicht" in news[2]["title"]
+        assert "Verbesserungsvorschläge" in news[2]["body"]
         assert all("Admin" not in item["title"] + item["body"] for item in news)
         for item in news:
             assert client.post(f"/api/news/{item['id']}/read").status_code == 204
@@ -197,7 +201,7 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Admin", "password": "admin family password",
         }).status_code == 200
         admin_news = client.get("/api/news").json()["news"]
-        assert len(admin_news) == 2
+        assert len(admin_news) == 3
         for item in admin_news:
             assert client.post(f"/api/news/{item['id']}/read").status_code == 204
         assert client.get("/api/news").json()["news"] == []

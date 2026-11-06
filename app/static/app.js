@@ -78,24 +78,45 @@ function parseWalkTarget(route) {
   return { mode: match[1], value: match[2], slot: match[3], personId };
 }
 
+async function confirmWalkStartGuidance() {
+  const guidance = await window.walkGuidance.load(
+    state.dogs,
+    () => api("/api/dogs"),
+  );
+  if (guidance.dogs !== null) state.dogs = guidance.dogs;
+  const confirmed = !guidance.notes.length ||
+    confirm(window.walkGuidance.format(guidance.notes));
+  return {
+    allowed: window.walkGuidance.shouldStart(guidance.notes, confirmed),
+    warning: guidance.error ? "Gassi-Hinweise konnten nicht geladen werden." : "",
+  };
+}
+
 async function startWalkFromCalendarLink(target) {
   const params = new URLSearchParams({
     person_id: String(target.personId),
     slot: target.slot,
     [target.mode]: target.value,
   });
+  let guidanceWarning = "";
   try {
+    if (!state.gamification?.walk_status?.active) {
+      const guidance = await confirmWalkStartGuidance();
+      guidanceWarning = guidance.warning;
+      if (!guidance.allowed) return;
+    }
     const result = await api(`/api/walks/start?${params}`, { method: "POST" });
     if (state.walkTarget === target) {
       state.walkTarget = null;
       history.replaceState(history.state, "", `${location.pathname}${location.search}`);
     }
-    toast(result.created
+    const successMessage = result.created
       ? `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`
-      : `Diese Gassi-Runde läuft bereits (${SLOT_LABELS[result.active.slot]})`);
+      : `Diese Gassi-Runde läuft bereits (${SLOT_LABELS[result.active.slot]})`;
+    toast(guidanceWarning ? `${successMessage}. ${guidanceWarning}` : successMessage);
     await loadGamification();
   } catch (error) {
-    toast(error.message);
+    toast(guidanceWarning ? `${error.message}. ${guidanceWarning}` : error.message);
   }
 }
 
@@ -1607,6 +1628,7 @@ document.getElementById("addPersonForm").onsubmit = async (ev) => {
 document.getElementById("walkSessionButton").onclick = async () => {
   const walkStatus = state.gamification?.walk_status;
   const active = walkStatus?.active;
+  let guidanceWarning = "";
   try {
     if (!active) {
       const walkWindow = walkStatus?.window;
@@ -1626,6 +1648,11 @@ document.getElementById("walkSessionButton").onclick = async () => {
         return;
       }
     }
+    if (!active) {
+      const guidance = await confirmWalkStartGuidance();
+      guidanceWarning = guidance.warning;
+      if (!guidance.allowed) return;
+    }
     let body;
     if (active) {
       const dogIdsByPerson = await requestDogSelections([state.me.person.id]);
@@ -1639,9 +1666,14 @@ document.getElementById("walkSessionButton").onclick = async () => {
         body: JSON.stringify(body),
       } : {}),
     });
-    toast(active ? "Gassi-Runde beendet" : `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`);
+    const successMessage = active
+      ? "Gassi-Runde beendet"
+      : `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`;
+    toast(guidanceWarning ? `${successMessage}. ${guidanceWarning}` : successMessage);
     await loadGamification();
-  } catch (e) { toast(e.message); }
+  } catch (e) {
+    toast(guidanceWarning ? `${e.message}. ${guidanceWarning}` : e.message);
+  }
 };
 document.getElementById("groupWalkConfirmButton").onclick = confirmGroupWalk;
 document.getElementById("groupWalkCancelButton").onclick = () => {

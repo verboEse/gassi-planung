@@ -62,6 +62,16 @@ PUSH_SERVICE_HOSTS = {
 }
 RELEASE_NEWS = (
     {
+        "id": "0.4.0-dog-walk-guidance",
+        "version": "0.4.0",
+        "title": "Gassi-Hinweise vor dem Start",
+        "body": (
+            "Vor dem Start liest du die hinterlegten Gassi-Hinweise der Hunde. Du kannst "
+            "abbrechen; Hunde werden weiterhin erst beim Beenden zugeordnet. Sind "
+            "Hinweise nicht verfügbar, bleibt der Start möglich."
+        ),
+    },
+    {
         "id": "0.3.0-secret-badges",
         "version": "0.3.0",
         "title": "Neue geheime Abzeichen und Serien-Erfolge",
