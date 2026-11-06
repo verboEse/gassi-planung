@@ -17,6 +17,7 @@ BADGE_DEFINITIONS = (
     ("ten-day-streak", "10 Tage am Stück"),
     ("ten-round-streak", "10 Runden am Stück"),
     ("ten-off-plan-walks", "10 Runden außer Plan"),
+    ("ten-extra-walks", "10 Extra-Runden"),
     ("first-shared-walk", "Gemeinsam gestartet"),
     ("ten-shared-walks", "Teamgeist 10"),
     ("fifty-shared-walks", "Teamgeist 50"),
@@ -99,10 +100,27 @@ def badge_progress(
     as_of: datetime | None = None,
 ) -> dict:
     rows = list(completions)
-    unique = {(row["date"], row["slot"]) for row in rows}
     target = definition["target_value"] or 1
     condition = json.loads(definition["condition_json"] or "{}")
     condition_type = definition["condition_type"]
+    if condition_type == "extra-walk-count":
+        value = len({
+            row["completion_id"]
+            for row in rows
+            if row.get("walk_type") == "extra"
+        })
+        reached = value >= target
+        return {
+            **definition,
+            "progress": target if already_earned else min(value, target),
+            "target": target,
+            "show_progress": True,
+            "earned": already_earned or reached,
+            "reached_now": reached,
+        }
+
+    rows = [row for row in rows if row.get("walk_type", "planned") != "extra"]
+    unique = {(row["date"], row["slot"]) for row in rows}
     streak_progress = {}
 
     if condition_type == "completion-count":
@@ -204,6 +222,8 @@ def summarize_completions(completions: Iterable[dict]) -> dict:
     unique: set[tuple[str, str]] = set()
     days_by_week: dict[tuple[int, int], set[int]] = {}
     for completion in completions:
+        if completion.get("walk_type", "planned") == "extra":
+            continue
         key = (completion["date"], completion["slot"])
         if key in unique:
             continue

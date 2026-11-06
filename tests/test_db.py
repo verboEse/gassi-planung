@@ -114,6 +114,102 @@ class TestMigration:
         assert plan == '{"jan":["morning"]}'
         assert tuple(share) == (0, 1)
 
+    def test_walk_type_migration_preserves_links_and_supports_multiple_extras(self, tmp_path):
+        db_file = tmp_path / "walk-type-migration.sqlite3"
+        with sqlite3.connect(db_file) as con:
+            con.executescript("""
+                PRAGMA foreign_keys = ON;
+                CREATE TABLE persons (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    color TEXT NOT NULL DEFAULT '#4a90d9',
+                    active INTEGER NOT NULL DEFAULT 1
+                );
+                INSERT INTO persons (id, name) VALUES (1, 'Jan');
+                CREATE TABLE shared_walks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    walk_date TEXT NOT NULL,
+                    slot TEXT NOT NULL,
+                    created_by INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (walk_date, slot)
+                );
+                INSERT INTO shared_walks
+                    (id, walk_date, slot, created_by, created_at)
+                VALUES (7, '2026-10-12', 'morning', 1, '2026-10-12T06:00:00Z');
+                CREATE TABLE dogs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    feeding_instructions TEXT NOT NULL DEFAULT '',
+                    medication_notes TEXT NOT NULL DEFAULT '',
+                    allergies TEXT NOT NULL DEFAULT '',
+                    veterinary_contact TEXT NOT NULL DEFAULT '',
+                    walk_notes TEXT NOT NULL DEFAULT ''
+                );
+                INSERT INTO dogs (id, name) VALUES (9, 'Rex');
+                CREATE TABLE walk_completions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
+                    walk_date TEXT NOT NULL,
+                    slot TEXT NOT NULL,
+                    source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
+                    off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1)),
+                    created_at TEXT NOT NULL,
+                    shared_walk_id INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL,
+                    UNIQUE (person_id, walk_date, slot)
+                );
+                INSERT INTO walk_completions
+                    (id, person_id, walk_date, slot, source, created_at, shared_walk_id)
+                VALUES (42, 1, '2026-10-12', 'morning', 'manual',
+                        '2026-10-12T06:00:00Z', 7);
+                CREATE TABLE walk_completion_dogs (
+                    completion_id INTEGER NOT NULL
+                        REFERENCES walk_completions(id) ON DELETE CASCADE,
+                    dog_id INTEGER NOT NULL REFERENCES dogs(id) ON DELETE CASCADE,
+                    PRIMARY KEY (completion_id, dog_id)
+                );
+                INSERT INTO walk_completion_dogs VALUES (42, 9);
+                CREATE TABLE active_walks (
+                    person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
+                    walk_date TEXT NOT NULL,
+                    slot TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))
+                );
+                INSERT INTO active_walks
+                    (person_id, walk_date, slot, started_at)
+                VALUES (1, '2026-10-13', 'noon', '2026-10-13T12:00:00Z');
+            """)
+
+        db = Database(db_file)
+
+        with db._connect() as con:
+            completion = con.execute(
+                "SELECT id, walk_type, slot, shared_walk_id, off_plan "
+                "FROM walk_completions WHERE id = 42"
+            ).fetchone()
+            assert tuple(completion) == (42, "planned", "morning", 7, 0)
+            assert con.execute(
+                "SELECT completion_id, dog_id FROM walk_completion_dogs"
+            ).fetchall()[0][:] == (42, 9)
+            active = con.execute(
+                "SELECT walk_type, slot FROM active_walks WHERE person_id = 1"
+            ).fetchone()
+            assert tuple(active) == ("planned", "noon")
+
+            for created_at in ("2026-10-12T08:00:00Z", "2026-10-12T10:00:00Z"):
+                con.execute(
+                    """INSERT INTO walk_completions
+                       (person_id, walk_date, slot, walk_type, source, off_plan, created_at)
+                       VALUES (1, '2026-10-12', NULL, 'extra', 'manual', 0, ?)""",
+                    (created_at,),
+                )
+            assert con.execute(
+                "SELECT count(*) FROM walk_completions "
+                "WHERE walk_date = '2026-10-12' AND walk_type = 'extra'"
+            ).fetchone()[0] == 2
+            assert con.execute("PRAGMA foreign_key_check").fetchall() == []
+
     def test_takeover_status_migration_preserves_requests(self, tmp_path):
         db_file = tmp_path / "takeovers.sqlite3"
         db = Database(db_file)
@@ -466,6 +562,36 @@ class TestWalkCompletions:
         assert db.list_walk_completions(jan["id"])[0]["source"] == "manual"
         assert db.list_walk_completions(jan["id"])[0]["off_plan"] == 1
         assert db.finish_walk(jan["id"], "2026-10-12T07:01:00+00:00") is None
+
+    def test_extra_sessions_are_distinct_and_removable_by_completion_id(self, tmp_path):
+        db = Database(tmp_path / "extra-walks.sqlite3")
+        jan = db.add_person("Jan")
+
+        completion_ids = []
+        for started_at, ended_at in (
+            ("2026-10-12T08:00:00+00:00", "2026-10-12T08:30:00+00:00"),
+            ("2026-10-12T10:00:00+00:00", "2026-10-12T10:30:00+00:00"),
+        ):
+            active = db.start_walk(
+                jan["id"], "2026-10-12", None, started_at, walk_type="extra"
+            )
+            assert active["walk_type"] == "extra"
+            result = db.finish_walk(jan["id"], ended_at)
+            assert result and result["walk_type"] == "extra" and result["created"]
+            completion_ids.append(result["completion_id"])
+
+        completions = db.list_walk_completions(jan["id"])
+        assert [row["completion_id"] for row in completions] == completion_ids
+        assert all(row["slot"] is None and row["walk_type"] == "extra" for row in completions)
+        assert [row["created_at"] for row in completions] == [
+            "2026-10-12T08:30:00+00:00",
+            "2026-10-12T10:30:00+00:00",
+        ]
+        assert db.remove_extra_walk_completion(jan["id"], completion_ids[0])
+        assert [row["completion_id"] for row in db.list_walk_completions(jan["id"])] == [
+            completion_ids[1]
+        ]
+        assert not db.remove_extra_walk_completion(jan["id"], completion_ids[0])
 
     def test_badges_can_be_removed(self, tmp_path):
         db = Database(tmp_path / "badges.sqlite3")
