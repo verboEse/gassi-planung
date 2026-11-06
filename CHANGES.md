@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 The current app version is maintained in `app/__init__.py`.
 
+## [0.4.0] - 2026-11-06
+
+### Added
+
+- Gassi-Hinweise der Hunde werden vor dem Start angezeigt; Hunde bleiben bis zum Beenden unzugeordnet.
+
 ## [0.3.0] - 2026-11-05
 
 ### Added
