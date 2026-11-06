@@ -175,16 +175,19 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         news = client.get("/api/news").json()["news"]
-        assert len(news) == 3
-        assert news[0]["version"] == "0.4.0"
-        assert news[0]["title"] == "Gassi-Hinweise vor dem Start"
-        assert "abbrechen" in news[0]["body"]
-        assert news[1]["version"] == "0.3.0"
-        assert news[1]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
-        assert "Bestwert" in news[1]["body"]
-        assert news[2]["version"] == "0.2.0"
-        assert "Mehr Übersicht" in news[2]["title"]
-        assert "Verbesserungsvorschläge" in news[2]["body"]
+        assert len(news) == 4
+        assert news[0]["version"] == "0.5.0"
+        assert news[0]["title"] == "Extra-Runden"
+        assert "zehn Extra-Runden" in news[0]["body"]
+        assert news[1]["version"] == "0.4.0"
+        assert news[1]["title"] == "Gassi-Hinweise vor dem Start"
+        assert "abbrechen" in news[1]["body"]
+        assert news[2]["version"] == "0.3.0"
+        assert news[2]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
+        assert "Bestwert" in news[2]["body"]
+        assert news[3]["version"] == "0.2.0"
+        assert "Mehr Übersicht" in news[3]["title"]
+        assert "Verbesserungsvorschläge" in news[3]["body"]
         assert all("Admin" not in item["title"] + item["body"] for item in news)
         for item in news:
             assert client.post(f"/api/news/{item['id']}/read").status_code == 204
@@ -201,7 +204,7 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Admin", "password": "admin family password",
         }).status_code == 200
         admin_news = client.get("/api/news").json()["news"]
-        assert len(admin_news) == 3
+        assert len(admin_news) == 4
         for item in admin_news:
             assert client.post(f"/api/news/{item['id']}/read").status_code == 204
         assert client.get("/api/news").json()["news"] == []
@@ -493,6 +496,118 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
         assert detail["participants"] == []
         assert client.get(avatar_url).status_code == 404
         assert client.get("/api/badges/missing").status_code == 404
+
+
+def test_extra_walk_badge_is_personal_hidden_and_permanent(tmp_path, monkeypatch):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    berlin_tz = ZoneInfo("Europe/Berlin")
+    monkeypatch.setattr(
+        main_module,
+        "berlin_now",
+        lambda: datetime(2026, 11, 3, 12, 0, tzinfo=berlin_tz),
+    )
+    db_path = tmp_path / "extra-badge.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    laura = db.add_account("Laura", hash_password("laura family password"))
+    app = create_app(str(db_path))
+
+    def record_extra(index):
+        started = datetime(2026, 11, 3, 8, index, tzinfo=berlin_tz)
+        active = db.start_walk(
+            jan["id"],
+            "2026-11-03",
+            None,
+            started.astimezone(timezone.utc).isoformat(timespec="seconds"),
+            walk_type="extra",
+        )
+        assert active["walk_type"] == "extra"
+        result = db.finish_walk(
+            jan["id"],
+            (started + timedelta(minutes=30)).astimezone(timezone.utc).isoformat(
+                timespec="seconds"
+            ),
+        )
+        assert result and result["created"]
+        return result["completion_id"]
+
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert client.get("/api/badges/ten-extra-walks").status_code == 404
+        for index in range(9):
+            record_extra(index)
+        assert "ten-extra-walks" not in {
+            badge["id"] for badge in client.get("/api/badges").json()["badges"]
+        }
+
+        completion_id = record_extra(9)
+        badge = next(
+            badge for badge in client.get("/api/badges").json()["badges"]
+            if badge["id"] == "ten-extra-walks"
+        )
+        assert badge["earned"]
+        assert client.get("/api/badges/ten-extra-walks").status_code == 200
+
+        progress = client.get("/api/gamification").json()
+        jan_progress = next(person for person in progress["persons"] if person["id"] == jan["id"])
+        assert jan_progress["points"] == 0
+        assert jan_progress["level"] == 1
+        assert db.list_person_badges(laura["id"]) == []
+        assert db.remove_extra_walk_completion(jan["id"], completion_id)
+        retained = next(
+            badge for badge in client.get("/api/badges").json()["badges"]
+            if badge["id"] == "ten-extra-walks"
+        )
+        assert retained["earned"]
+
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 200
+        assert "ten-extra-walks" not in {
+            badge["id"] for badge in client.get("/api/badges").json()["badges"]
+        }
+
+
+def test_extra_completion_deletion_is_owner_scoped_and_excludes_planned_walks(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
+    db_path = tmp_path / "extra-delete-auth.sqlite3"
+    db = Database(db_path)
+    jan = db.add_account("Jan", hash_password("jan family password"))
+    db.add_account("Laura", hash_password("laura family password"))
+    active = db.start_walk(
+        jan["id"], "2026-10-12", None, "2026-10-12T08:00:00+00:00",
+        walk_type="extra",
+    )
+    extra = db.finish_walk(jan["id"], "2026-10-12T08:30:00+00:00")
+    planned = db.add_walk_completion(jan["id"], "2026-10-12", "morning", "manual")
+    assert active["walk_type"] == "extra" and extra and extra["created"] and planned
+    planned_id = next(
+        row["completion_id"]
+        for row in db.list_walk_completions(jan["id"])
+        if row["walk_type"] == "planned"
+    )
+    app = create_app(str(db_path))
+
+    with TestClient(app) as client:
+        assert client.post("/auth/login", json={
+            "display_name": "Laura", "password": "laura family password",
+        }).status_code == 200
+        assert client.delete(f"/api/completions/{extra['completion_id']}").status_code == 404
+        assert client.delete(f"/api/completions/{planned_id}").status_code == 404
+
+        assert client.post("/auth/login", json={
+            "display_name": "Jan", "password": "jan family password",
+        }).status_code == 200
+        assert client.delete(f"/api/completions/{planned_id}").status_code == 404
+        assert client.delete(f"/api/completions/{extra['completion_id']}").status_code == 200
+        assert {row["completion_id"] for row in db.list_walk_completions(jan["id"])} == {
+            planned_id
+        }
 
 
 def test_secret_streak_badge_is_hidden_then_revoked_after_correction(tmp_path, monkeypatch):

@@ -179,6 +179,19 @@ Dann `Jan` durch den gewünschten Benutzernamen ersetzen:
 docker compose exec app python -c 'import sqlite3; c=sqlite3.connect("/data/gassi.sqlite3"); c.execute("PRAGMA foreign_keys=ON"); c.execute("DELETE FROM persons WHERE id=(SELECT person_id FROM accounts WHERE username=?)", ("Jan",)); c.commit()'
 ```
 
+### Datenbankmigration für Extra-Runden
+
+Vor dem Upgrade auf Version `0.5.0` muss die SQLite-Datenbank gesichert werden; im
+Docker-Betrieb kann dafür der obige `docker compose cp`-Befehl verwendet werden.
+Die Migration beim App-Start erhält vorhandene Abschlüsse und führt sie als
+geplante Runden weiter.
+
+Sobald Extra-Runden gespeichert wurden, darf die Anwendung nicht auf eine Version
+vor `0.5.0` zurückgerollt werden: ältere Versionen unterstützen Abschlüsse ohne
+geplanten Slot nicht vollständig. Stattdessen einen Vorwärtsfix deployen oder die
+Sicherung zurückspielen. Beim Wiederherstellen gehen alle seit der Sicherung
+erfassten Extra-Runden verloren.
+
 Der Kalender-Feed liefert Termine dieser Woche als einzelne Events und lässt
 die Termine ab nächster Woche nach den aktuellen Präferenzen wöchentlich
 wiederkehren. So wirken Änderungen weder im aktuellen Wochenplan noch im
@@ -244,10 +257,11 @@ pytest
 | `GET`    | `/api/badges/{badge_id}`                                 | Abzeichenbedingung, Fortschritt und opt-in Teilnehmerliste anzeigen                                    |
 | `GET`    | `/api/badges/{badge_id}/participants/{person_id}/avatar` | Profilbild eines für dieses Abzeichen sichtbaren Teilnehmers geschützt abrufen                         |
 | `GET`    | `/api/gamification`                                      | Gruppenfortschritt, Abschlussstatus und eigene aktive Runde anzeigen                                   |
-| `POST`   | `/api/walks/start`                                       | Gassi-Session im aktuellen Zeitfenster starten                                                         |
+| `POST`   | `/api/walks/start`                                       | Geplante Gassi-Session starten; `?walk_type=extra` startet eine Extra-Runde außerhalb des Plans        |
 | `POST`   | `/api/walks/end`                                         | Aktive Gassi-Session beenden und Abschluss speichern                                                   |
 | `PUT`    | `/api/completions`                                       | Zugewiesene eigene Planrunde im aktuellen Zeitfenster abschließen                                      |
 | `DELETE` | `/api/completions/{date}/{slot}`                         | Eigenen Abschluss entfernen                                                                            |
+| `DELETE` | `/api/completions/{completion_id}`                       | Eigene Extra-Runde anhand ihrer Abschluss-ID entfernen                                                 |
 | `GET`    | `/api/calendar/{token}.ics`                              | Persönlicher iCal-Feed (Abo-Link ist widerrufbar)                                                      |
 | `POST`   | `/api/me/calendar-token`                                 | Persönlichen Kalender-Link erneuern                                                                    |
 

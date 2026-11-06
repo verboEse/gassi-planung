@@ -167,6 +167,91 @@ class TestGamification:
         assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 404
         assert client.get("/api/gamification").json()["persons"][0]["points"] == 1
 
+    def test_extra_walk_can_start_outside_schedule_without_changing_planned_rules(
+        self, client, monkeypatch
+    ):
+        person = add_person(client, "Jan")
+        set_time = lambda hour, minute: monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, hour, minute, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        set_time(2, 0)
+        status = client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()["walk_status"]
+        assert not status["can_start"]
+        assert status["can_start_extra"]
+
+        url = f"/api/walks/start?person_id={person['id']}&walk_type=extra"
+        started = client.post(url)
+        assert started.status_code == 200
+        assert started.json()["created"]
+        assert started.json()["active"]["walk_type"] == "extra"
+        assert started.json()["active"]["slot"] is None
+        assert started.json()["active"]["date"] == "2026-01-01"
+        assert not client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()["walk_status"]["can_start_extra"]
+        assert not client.post(url).json()["created"]
+        assert client.post(
+            f"/api/walks/start?person_id={person['id']}"
+        ).status_code == 409
+
+        set_time(2, 30)
+        ended = client.post(f"/api/walks/end?person_id={person['id']}")
+        assert ended.status_code == 200
+        assert ended.json()["walk_type"] == "extra"
+        assert ended.json()["slot"] is None
+        assert client.post(
+            f"/api/walks/start?person_id={person['id']}"
+        ).status_code == 422
+
+    def test_extra_completion_list_and_id_delete_keep_other_same_day_walks(
+        self, tmp_path, client, monkeypatch
+    ):
+        db = Database(tmp_path / "test.sqlite3")
+        person = add_person(client, "Jan")
+        dog = db.add_dog("Rex")
+        set_time = lambda hour, minute: monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, hour, minute, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+
+        for start_minute in (0, 60):
+            start_hour, minute = 2 + start_minute // 60, start_minute % 60
+            set_time(start_hour, minute)
+            started = client.post(
+                f"/api/walks/start?person_id={person['id']}&walk_type=extra"
+            )
+            assert started.status_code == 200
+            set_time(start_hour, minute + 30)
+            ended = client.post(
+                f"/api/walks/end?person_id={person['id']}",
+                json={"dog_ids": [dog["id"]]},
+            )
+            assert ended.status_code == 200
+
+        completions = client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()["completions"]
+        assert len(completions) == 2
+        assert [row["walk_type"] for row in completions] == ["extra", "extra"]
+        assert all(row["slot"] is None for row in completions)
+        assert all(row["dog_names"] == ["Rex"] for row in completions)
+
+        first_id = completions[0]["completion_id"]
+        removed = client.delete(
+            f"/api/completions/{first_id}?person_id={person['id']}"
+        )
+        assert removed.status_code == 200
+        remaining = client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()["completions"]
+        assert len(remaining) == 1
+        assert remaining[0]["completion_id"] == completions[1]["completion_id"]
+
     def test_completion_dog_assignments_validate_and_persist_per_person(self, tmp_path, monkeypatch):
         monkeypatch.setattr(main_module, "current_iso_week", lambda: (2026, 1))
         monkeypatch.setattr(

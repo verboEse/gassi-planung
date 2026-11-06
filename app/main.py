@@ -62,6 +62,16 @@ PUSH_SERVICE_HOSTS = {
 }
 RELEASE_NEWS = (
     {
+        "id": "0.5.0-extra-walks",
+        "version": "0.5.0",
+        "title": "Extra-Runden",
+        "body": (
+            "Du kannst jetzt zusätzliche Gassirunden außerhalb des Plans starten. Sie "
+            "verändern weder Punkte noch bestehende Abzeichen; nach zehn Extra-Runden "
+            "schaltest du ein geheimes Abzeichen frei."
+        ),
+    },
+    {
         "id": "0.4.0-dog-walk-guidance",
         "version": "0.4.0",
         "title": "Gassi-Hinweise vor dem Start",
@@ -1346,6 +1356,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 "window": window,
                 "assignee_id": assignee_id,
                 "can_start": bool(window) and active is None,
+                "can_start_extra": viewer_id is not None and active is None,
             },
         }
 
@@ -1355,16 +1366,21 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         date: dt_date | None = None,
         weekday: Annotated[int | None, Query(ge=1, le=7)] = None,
         slot: str | None = None,
+        walk_type: Literal["planned", "extra"] = "planned",
         account: dict | None = Depends(require_account),
     ):
         owner_id = completion_person_id(person_id, account)
         if not db.person_exists(owner_id):
             raise HTTPException(404, "Teilnehmer nicht gefunden")
         has_target = date is not None or weekday is not None or slot is not None
+        if walk_type == "extra" and has_target:
+            raise HTTPException(422, "Extra-Runden haben kein geplantes Zeitfenster")
         if has_target and (slot not in SLOTS or (date is None) == (weekday is None)):
             raise HTTPException(422, "Ungültiger Kalenderlink")
         active = db.active_walk(owner_id)
         if active:
+            if active["walk_type"] != walk_type:
+                raise HTTPException(409, "Eine andere Gassirunde ist bereits gestartet")
             if has_target:
                 active_date = dt_date.fromisoformat(active["date"])
                 target_matches_active = (
@@ -1376,6 +1392,16 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 if slot != active["slot"] or not target_matches_active:
                     raise HTTPException(409, "Eine andere Gassirunde ist bereits gestartet")
             return {"ok": True, "created": False, "active": active}
+        started_at = berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds")
+        if walk_type == "extra":
+            active = db.start_walk(
+                owner_id,
+                berlin_now().date().isoformat(),
+                None,
+                started_at,
+                walk_type="extra",
+            )
+            return {"ok": True, "created": True, "active": active}
         window = current_walk_window()
         if not window:
             raise HTTPException(
@@ -1397,7 +1423,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             owner_id,
             window["date"],
             window["slot"],
-            berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
+            started_at,
             off_plan=off_plan,
         )
         return {"ok": True, "created": True, "active": active}
@@ -1504,6 +1530,18 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             raise HTTPException(404, "Abschluss nicht gefunden")
         for affected_person_id in affected_people:
             sync_person_badges(affected_person_id)
+        return {"ok": True}
+
+    @app.delete("/api/completions/{completion_id}")
+    def delete_extra_completion(
+        completion_id: int,
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        owner_id = completion_person_id(person_id, account)
+        if not db.remove_extra_walk_completion(owner_id, completion_id):
+            raise HTTPException(404, "Extra-Runde nicht gefunden")
+        sync_person_badges(owner_id)
         return {"ok": True}
 
     @app.get("/dog-care/{share_token}", include_in_schema=False)

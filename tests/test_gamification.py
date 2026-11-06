@@ -193,6 +193,73 @@ def test_off_plan_badge_counts_distinct_walks_without_a_streak():
     assert result["reached_now"]
 
 
+def test_extra_walks_do_not_affect_standard_progression_or_badges():
+    start = dt_date(2026, 10, 12)
+    extras = [
+        {
+            "completion_id": index + 1,
+            "date": (start + timedelta(days=index)).isoformat(),
+            "slot": None,
+            "walk_type": "extra",
+            "source": "manual",
+            "off_plan": 1,
+            "shared_walk_id": index + 1,
+            "shared_group_size": 4,
+        }
+        for index in range(14)
+    ]
+    summary = summarize_completions(extras)
+    assert summary["points"] == 0
+    assert summary["level"] == 1
+    assert summary["badges"] == []
+
+    conditions = (
+        ("completion-count", {}),
+        ("shared-walk-count", {}),
+        ("group-size", {"size": 4}),
+        ("off-plan-count", {}),
+        ("consecutive-days", {}),
+        ("consecutive-slots", {}),
+        ("full-iso-week", {}),
+        ("date-completion", {"date": extras[0]["date"]}),
+    )
+    for condition_type, condition in conditions:
+        definition = {
+            **badge_definition(condition_type, target=1),
+            "condition_json": json.dumps(condition),
+        }
+        progress = badge_progress(
+            definition, extras, False, as_of=datetime(2026, 10, 26, 12)
+        )
+        assert not progress["reached_now"], condition_type
+        assert progress["progress"] == 0, condition_type
+
+
+def test_extra_walk_badge_counts_distinct_same_day_completion_ids():
+    definition = {
+        **badge_definition("extra-walk-count", target=10),
+        "condition_json": "{}",
+    }
+    extras = [
+        {
+            "completion_id": index,
+            "date": "2026-10-12",
+            "slot": None,
+            "walk_type": "extra",
+        }
+        for index in range(1, 11)
+    ]
+    extras.append(dict(extras[0]))
+
+    before_tenth = badge_progress(definition, extras[:9], False)
+    reached = badge_progress(definition, extras, False)
+
+    assert before_tenth["progress"] == 9
+    assert not before_tenth["reached_now"]
+    assert reached["progress"] == 10
+    assert reached["reached_now"]
+
+
 def test_repeated_day_streak_reports_current_progress_against_previous_best():
     start = dt_date(2026, 1, 1)
     previous_best = [
