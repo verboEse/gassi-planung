@@ -98,15 +98,21 @@ WHERE status IN ('pending', 'approved')
 """
 
 WALK_COMPLETIONS_DDL = """
-CREATE TABLE IF NOT EXISTS walk_completions (
+CREATE TABLE {if_not_exists}{table_name} (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     person_id INTEGER NOT NULL REFERENCES persons(id) ON DELETE CASCADE,
     walk_date TEXT NOT NULL,
-    slot TEXT NOT NULL,
+    slot TEXT,
+    walk_type TEXT NOT NULL DEFAULT 'planned'
+        CHECK (walk_type IN ('planned', 'extra')),
     source TEXT NOT NULL CHECK (source IN ('plan', 'manual')),
     off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1)),
     created_at TEXT NOT NULL,
     shared_walk_id INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL,
+    CHECK (
+        (walk_type = 'planned' AND slot IS NOT NULL)
+        OR (walk_type = 'extra' AND slot IS NULL AND off_plan = 0 AND shared_walk_id IS NULL)
+    ),
     UNIQUE (person_id, walk_date, slot)
 )
 """
@@ -173,12 +179,18 @@ ON walk_completion_dogs (dog_id)
 """
 
 ACTIVE_WALKS_DDL = """
-CREATE TABLE IF NOT EXISTS active_walks (
+CREATE TABLE {if_not_exists}{table_name} (
     person_id INTEGER PRIMARY KEY REFERENCES persons(id) ON DELETE CASCADE,
     walk_date TEXT NOT NULL,
-    slot TEXT NOT NULL,
+    slot TEXT,
+    walk_type TEXT NOT NULL DEFAULT 'planned'
+        CHECK (walk_type IN ('planned', 'extra')),
     started_at TEXT NOT NULL,
-    off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))
+    off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1)),
+    CHECK (
+        (walk_type = 'planned' AND slot IS NOT NULL)
+        OR (walk_type = 'extra' AND slot IS NULL AND off_plan = 0)
+    )
 )
 """
 
@@ -296,8 +308,11 @@ BADGE_SEEDS = [
     ("ten-day-streak", "streaks-habits", "10 Tage am Stück", "Geh an mindestens zehn aufeinanderfolgenden Kalendertagen mindestens eine Runde.", "consecutive-days", '{}', 10, None, None, "current-count", "seven-paws"),
     ("ten-round-streak", "streaks-habits", "10 Runden am Stück", "Erledige zehn aufeinanderfolgende Slots ohne eine Runde auszulassen.", "consecutive-slots", '{}', 10, None, None, "current-count", "bronze-medal"),
     ("ten-off-plan-walks", "streaks-habits", "10 Runden außer Plan", "Erledige zehn Runden, für die du laut Plan nicht eingeteilt warst.", "off-plan-count", '{}', 10, None, None, "current-count", "heart-paws"),
+    ("ten-extra-walks", "streaks-habits", "10 Extra-Runden", "Erledige zehn zusätzliche Gassirunden außerhalb der drei geplanten Slots.", "extra-walk-count", '{}', 10, None, None, "historical", "heart-paws"),
 ]
-SECRET_BADGE_IDS = ("ten-day-streak", "ten-round-streak", "ten-off-plan-walks")
+SECRET_BADGE_IDS = (
+    "ten-day-streak", "ten-round-streak", "ten-off-plan-walks", "ten-extra-walks",
+)
 
 SEASONAL_EVENT_SEEDS = [
     ("new-year-walk", "Neujahr", "Neujahrsrunde", "Starte das Jahr mit einer Gassirunde.", 1, 1, "fireworks"),
@@ -337,6 +352,7 @@ class Database:
     def __init__(self, path: str | Path):
         self.path = str(path)
         self._init_schema()
+        self._migrate_walk_types()
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self.path)
@@ -405,7 +421,9 @@ class Database:
                 )
                 con.execute("DROP TABLE walk_takeover_requests_old")
             con.execute(ACTIVE_WALK_TAKEOVER_INDEX_DDL)
-            con.execute(WALK_COMPLETIONS_DDL)
+            con.execute(WALK_COMPLETIONS_DDL.format(
+                if_not_exists="IF NOT EXISTS ", table_name="walk_completions"
+            ))
             completion_cols = {row[1] for row in con.execute("PRAGMA table_info(walk_completions)")}
             if "shared_walk_id" not in completion_cols:
                 con.execute(
@@ -425,7 +443,9 @@ class Database:
             con.execute("INSERT OR IGNORE INTO dog_care_share (id) VALUES (1)")
             con.execute(WALK_COMPLETION_DOGS_DDL)
             con.execute(WALK_COMPLETION_DOGS_INDEX_DDL)
-            con.execute(ACTIVE_WALKS_DDL)
+            con.execute(ACTIVE_WALKS_DDL.format(
+                if_not_exists="IF NOT EXISTS ", table_name="active_walks"
+            ))
             active_walk_cols = {
                 row[1] for row in con.execute("PRAGMA table_info(active_walks)")
             }
@@ -576,6 +596,92 @@ class Database:
                 con.execute("DROP TABLE prefs_old")
             else:
                 con.execute(PREFS_DDL)
+
+    def _migrate_walk_types(self) -> None:
+        con = sqlite3.connect(self.path)
+        con.row_factory = sqlite3.Row
+        con.execute("PRAGMA foreign_keys = OFF")
+        try:
+            completion_info = {
+                row["name"]: row
+                for row in con.execute("PRAGMA table_info(walk_completions)")
+            }
+            active_info = {
+                row["name"]: row
+                for row in con.execute("PRAGMA table_info(active_walks)")
+            }
+            rebuild_completions = (
+                "walk_type" not in completion_info
+                or completion_info["slot"]["notnull"]
+            )
+            rebuild_active_walks = (
+                "walk_type" not in active_info
+                or active_info["slot"]["notnull"]
+            )
+            if not rebuild_completions and not rebuild_active_walks:
+                return
+
+            con.execute("BEGIN IMMEDIATE")
+            if rebuild_completions:
+                con.execute(WALK_COMPLETIONS_DDL.format(
+                    if_not_exists="", table_name="walk_completions_new"
+                ))
+                if "walk_type" in completion_info:
+                    con.execute("""
+                        INSERT INTO walk_completions_new
+                            (id, person_id, walk_date, slot, walk_type, source,
+                             off_plan, created_at, shared_walk_id)
+                        SELECT id, person_id, walk_date, slot, walk_type, source,
+                               off_plan, created_at, shared_walk_id
+                        FROM walk_completions
+                    """)
+                else:
+                    con.execute("""
+                        INSERT INTO walk_completions_new
+                            (id, person_id, walk_date, slot, walk_type, source,
+                             off_plan, created_at, shared_walk_id)
+                        SELECT id, person_id, walk_date, slot, 'planned', source,
+                               off_plan, created_at, shared_walk_id
+                        FROM walk_completions
+                    """)
+                con.execute("DROP TABLE walk_completions")
+                con.execute(
+                    "ALTER TABLE walk_completions_new RENAME TO walk_completions"
+                )
+                con.execute(WALK_COMPLETIONS_INDEX_DDL)
+
+            if rebuild_active_walks:
+                con.execute(ACTIVE_WALKS_DDL.format(
+                    if_not_exists="", table_name="active_walks_new"
+                ))
+                if "walk_type" in active_info:
+                    con.execute("""
+                        INSERT INTO active_walks_new
+                            (person_id, walk_date, slot, walk_type, started_at, off_plan)
+                        SELECT person_id, walk_date, slot, walk_type, started_at, off_plan
+                        FROM active_walks
+                    """)
+                else:
+                    con.execute("""
+                        INSERT INTO active_walks_new
+                            (person_id, walk_date, slot, walk_type, started_at, off_plan)
+                        SELECT person_id, walk_date, slot, 'planned', started_at, off_plan
+                        FROM active_walks
+                    """)
+                con.execute("DROP TABLE active_walks")
+                con.execute("ALTER TABLE active_walks_new RENAME TO active_walks")
+
+            violations = con.execute("PRAGMA foreign_key_check").fetchall()
+            if violations:
+                raise sqlite3.IntegrityError(
+                    f"Walk schema migration caused foreign key violations: {violations!r}"
+                )
+            con.commit()
+        except Exception:
+            con.rollback()
+            raise
+        finally:
+            con.close()
 
     # --- Personen ---------------------------------------------------------
 
@@ -1631,9 +1737,19 @@ class Database:
                     con.execute("DELETE FROM shared_walks WHERE id = ?", (shared_walk_id,))
         return True
 
+    def remove_extra_walk_completion(self, person_id: int, completion_id: int) -> bool:
+        with self._connect() as con:
+            cur = con.execute(
+                """DELETE FROM walk_completions
+                   WHERE id = ? AND person_id = ? AND walk_type = 'extra'""",
+                (completion_id, person_id),
+            )
+        return cur.rowcount > 0
+
     def list_walk_completions(self, person_id: int | None = None) -> list[dict]:
         query = """
-            SELECT c.id AS completion_id, c.person_id, c.walk_date AS date, c.slot,
+            SELECT c.id AS completion_id, c.person_id, c.walk_date AS date,
+                   c.slot, c.walk_type,
                    c.source, c.off_plan, c.created_at,
                    c.shared_walk_id,
                    CASE WHEN c.shared_walk_id IS NULL THEN 0 ELSE (
@@ -1650,7 +1766,10 @@ class Database:
         if person_id is not None:
             query += " WHERE c.person_id = ?"
             params = (person_id,)
-        query += " ORDER BY c.walk_date, c.slot, c.person_id, c.id, completion_dogs.dog_id"
+        query += (
+            " ORDER BY c.walk_date, CASE WHEN c.walk_type = 'extra' THEN 1 ELSE 0 END,"
+            " c.slot, c.created_at, c.person_id, c.id, completion_dogs.dog_id"
+        )
         with self._connect() as con:
             rows = con.execute(query, params).fetchall()
         completions_by_id = {}
@@ -1662,8 +1781,9 @@ class Database:
                 completion = {
                     key: row[key]
                     for key in (
-                        "person_id", "date", "slot", "source", "off_plan", "created_at",
-                        "shared_walk_id", "shared_group_size",
+                        "completion_id", "person_id", "date", "slot", "walk_type",
+                        "source", "off_plan", "created_at", "shared_walk_id",
+                        "shared_group_size",
                     )
                 }
                 completion["dog_ids"] = []
@@ -1679,7 +1799,7 @@ class Database:
         with self._connect() as con:
             row = con.execute(
                 """
-                SELECT person_id, walk_date AS date, slot, started_at
+                SELECT person_id, walk_date AS date, slot, walk_type, started_at, off_plan
                 FROM active_walks WHERE person_id = ?
                 """,
                 (person_id,),
@@ -1690,22 +1810,23 @@ class Database:
         self,
         person_id: int,
         walk_date: str,
-        slot: str,
+        slot: str | None,
         started_at: str,
         off_plan: bool = False,
+        walk_type: str = "planned",
     ) -> dict:
         with self._connect() as con:
             con.execute(
                 """
                 INSERT OR IGNORE INTO active_walks
-                    (person_id, walk_date, slot, started_at, off_plan)
-                VALUES (?, ?, ?, ?, ?)
+                    (person_id, walk_date, slot, walk_type, started_at, off_plan)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (person_id, walk_date, slot, started_at, int(off_plan)),
+                (person_id, walk_date, slot, walk_type, started_at, int(off_plan)),
             )
             row = con.execute(
                 """
-                SELECT person_id, walk_date AS date, slot, started_at, off_plan
+                SELECT person_id, walk_date AS date, slot, walk_type, started_at, off_plan
                 FROM active_walks WHERE person_id = ?
                 """,
                 (person_id,),
@@ -1720,7 +1841,7 @@ class Database:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 """
-                SELECT person_id, walk_date AS date, slot, off_plan
+                SELECT person_id, walk_date AS date, slot, walk_type, off_plan
                 FROM active_walks WHERE person_id = ?
                 """,
                 (person_id,),
@@ -1730,24 +1851,32 @@ class Database:
             cur = con.execute(
                 """
                 INSERT OR IGNORE INTO walk_completions
-                    (person_id, walk_date, slot, source, off_plan, created_at)
-                VALUES (?, ?, ?, 'manual', ?, ?)
+                    (person_id, walk_date, slot, walk_type, source, off_plan, created_at)
+                VALUES (?, ?, ?, ?, 'manual', ?, ?)
                 """,
-                (row["person_id"], row["date"], row["slot"], row["off_plan"], ended_at),
+                (
+                    row["person_id"], row["date"], row["slot"], row["walk_type"],
+                    row["off_plan"], ended_at,
+                ),
             )
-            if dog_ids is not None:
-                completion = con.execute(
-                    "SELECT id FROM walk_completions "
-                    "WHERE person_id = ? AND walk_date = ? AND slot = ?",
+            completion_id = cur.lastrowid if cur.rowcount > 0 else None
+            if completion_id is None and row["walk_type"] == "planned":
+                existing = con.execute(
+                    """SELECT id FROM walk_completions
+                       WHERE person_id = ? AND walk_date = ? AND slot = ?""",
                     (row["person_id"], row["date"], row["slot"]),
                 ).fetchone()
-                if completion is not None:
-                    self._replace_completion_dogs(con, completion["id"], dog_ids)
+                completion_id = existing["id"] if existing else None
+            if dog_ids is not None:
+                if completion_id is not None:
+                    self._replace_completion_dogs(con, completion_id, dog_ids)
             con.execute("DELETE FROM active_walks WHERE person_id = ?", (person_id,))
         return {
+            "completion_id": completion_id,
             "person_id": row["person_id"],
             "date": row["date"],
             "slot": row["slot"],
+            "walk_type": row["walk_type"],
             "source": "manual",
             "off_plan": bool(row["off_plan"]),
             "created": cur.rowcount > 0,

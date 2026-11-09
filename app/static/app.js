@@ -61,6 +61,13 @@ function fmtDate(iso) {
   return `${d}.${m}.`;
 }
 
+function fmtTime(iso) {
+  return new Intl.DateTimeFormat("de-DE", {
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(iso));
+}
+
 function parseWalkTarget(route) {
   const match = /^walk\/(date|weekday)\/([^/]+)\/(morning|noon|evening)\/(\d+)$/.exec(route);
   if (!match) return null;
@@ -368,12 +375,14 @@ function renderGamification() {
   const people = document.getElementById("gamificationPeople");
   const completions = document.getElementById("myCompletions");
   const sessionButton = document.getElementById("walkSessionButton");
+  const extraWalkButton = document.getElementById("extraWalkButton");
   const sessionHint = document.getElementById("walkSessionHint");
   if (!state.gamification) {
     summary.textContent = "";
     people.replaceChildren();
     completions.replaceChildren();
     sessionButton.hidden = true;
+    extraWalkButton.hidden = true;
     sessionHint.textContent = "";
     return;
   }
@@ -393,10 +402,14 @@ function renderGamification() {
   sessionButton.disabled = Boolean(state.me) && !walkStatus.active &&
     (!walkStatus.can_start || !walkStatus.assignee_id || awaitingTakeover);
   sessionButton.textContent = walkStatus.active
-    ? "Gassi-Runde beenden"
+    ? walkStatus.active.walk_type === "extra" ? "Extra-Runde beenden" : "Gassi-Runde beenden"
     : awaitingTakeover ? "Anfrage läuft" : "Jetzt Gassi gehen";
+  extraWalkButton.hidden = !state.me || Boolean(walkStatus.active);
+  extraWalkButton.disabled = !walkStatus.can_start_extra;
   sessionHint.textContent = walkStatus.active
-    ? `Gestartet: ${SLOT_LABELS[walkStatus.active.slot]}`
+    ? walkStatus.active.walk_type === "extra"
+      ? `Extra-Runde gestartet: ${fmtTime(walkStatus.active.started_at)}`
+      : `Gestartet: ${SLOT_LABELS[walkStatus.active.slot]}`
     : walkWindow
       ? `Aktuelles Zeitfenster: ${SLOT_LABELS[walkWindow.slot]}`
       : "Start nur im jeweiligen Zeitfenster mit 30 Minuten Toleranz möglich.";
@@ -430,8 +443,11 @@ function renderGamification() {
   for (const completion of ownCompletions) {
     const row = document.createElement("div");
     row.className = "completion-row";
+    const isExtra = completion.walk_type === "extra";
     row.appendChild(document.createTextNode(
-      `${fmtDate(completion.date)} · ${SLOT_LABELS[completion.slot]}`
+      isExtra
+        ? `${fmtDate(completion.date)} · Extra-Runde · ${fmtTime(completion.created_at)}`
+        : `${fmtDate(completion.date)} · ${SLOT_LABELS[completion.slot]}`
     ));
     const dogs = document.createElement("span");
     dogs.className = "completion-dogs";
@@ -443,8 +459,10 @@ function renderGamification() {
     remove.type = "button";
     remove.className = "secondary";
     remove.textContent = "Rückgängig";
-    remove.onclick = () => removeCompletion(completion.date, completion.slot)
-      .catch(e => toast(e.message));
+    remove.onclick = () => (isExtra
+      ? removeExtraCompletion(completion.completion_id)
+      : removeCompletion(completion.date, completion.slot)
+    ).catch(e => toast(e.message));
     row.appendChild(remove);
     completions.appendChild(row);
   }
@@ -754,6 +772,12 @@ async function toggleCompletion(date, slot, completed) {
 async function removeCompletion(date, slot) {
   const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
   await api(`/api/completions/${date}/${slot}${personId}`, { method: "DELETE" });
+  await loadGamification();
+}
+
+async function removeExtraCompletion(completionId) {
+  const personId = state.me ? "" : `?person_id=${state.selectedPerson}`;
+  await api(`/api/completions/${completionId}${personId}`, { method: "DELETE" });
   await loadGamification();
 }
 
@@ -1667,12 +1691,28 @@ document.getElementById("walkSessionButton").onclick = async () => {
       } : {}),
     });
     const successMessage = active
-      ? "Gassi-Runde beendet"
+      ? active.walk_type === "extra" ? "Extra-Runde beendet" : "Gassi-Runde beendet"
       : `Gassi-Runde gestartet (${SLOT_LABELS[result.active.slot]})`;
     toast(guidanceWarning ? `${successMessage}. ${guidanceWarning}` : successMessage);
     await loadGamification();
   } catch (e) {
     toast(guidanceWarning ? `${e.message}. ${guidanceWarning}` : e.message);
+  }
+};
+document.getElementById("extraWalkButton").onclick = async () => {
+  const walkStatus = state.gamification?.walk_status;
+  if (!walkStatus?.can_start_extra || walkStatus.active) return;
+  let guidanceWarning = "";
+  try {
+    const guidance = await confirmWalkStartGuidance();
+    guidanceWarning = guidance.warning;
+    if (!guidance.allowed) return;
+    await api("/api/walks/start?walk_type=extra", { method: "POST" });
+    const successMessage = "Extra-Runde gestartet";
+    toast(guidanceWarning ? `${successMessage}. ${guidanceWarning}` : successMessage);
+    await loadGamification();
+  } catch (error) {
+    toast(guidanceWarning ? `${error.message}. ${guidanceWarning}` : error.message);
   }
 };
 document.getElementById("groupWalkConfirmButton").onclick = confirmGroupWalk;
