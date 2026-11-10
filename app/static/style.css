@@ -233,6 +233,18 @@ td.unassigned {
 .badge-category h3 { margin: 0 0 0.5rem; font-size: 1rem; }
 .badge-items { display: flex; flex-wrap: wrap; gap: 0.65rem; }
 @media (max-width: 40rem) {
+  body { padding-bottom: calc(5rem + env(safe-area-inset-bottom)); }
+  #walkSessionButton:not([hidden]) {
+    position: fixed;
+    z-index: 10;
+    left: max(1rem, env(safe-area-inset-left));
+    right: max(1rem, env(safe-area-inset-right));
+    bottom: calc(0.75rem + env(safe-area-inset-bottom));
+    min-height: 3rem;
+    padding: 0.75rem 1rem;
+    font-size: 1.05rem;
+    box-shadow: 0 0.25rem 1rem rgba(0, 0, 0, 0.45);
+  }
   .badge-items { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 7.5rem), 1fr)); }
   .badge-tile { min-width: 0; }
 }

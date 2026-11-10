@@ -278,6 +278,38 @@ def test_service_worker_is_root_scoped(tmp_path):
     assert 'addEventListener("push"' in response.text
 
 
+def test_pwa_manifest_and_icons_are_served(tmp_path):
+    app = create_app(str(tmp_path / "pwa.sqlite3"), auth_enabled=False)
+    with TestClient(app) as client:
+        page = client.get("/")
+        manifest_response = client.get("/static/manifest.webmanifest")
+        touch_icon = client.get("/static/apple-touch-icon.png")
+        manifest = manifest_response.json()
+        icons = {icon["sizes"]: icon for icon in manifest["icons"]}
+        app_icons = {
+            size: client.get(icons[size]["src"])
+            for size in ("192x192", "512x512")
+        }
+
+    assert 'name="theme-color" content="#0f1419"' in page.text
+    assert 'name="apple-mobile-web-app-capable" content="yes"' in page.text
+    assert manifest_response.headers["content-type"].startswith("application/manifest+json")
+    assert manifest["name"] == "Gassi-Planung"
+    assert manifest["display"] == "standalone"
+    assert manifest["theme_color"] == "#0f1419"
+    assert manifest["start_url"] == "/"
+    for size, response in app_icons.items():
+        expected_dimension = int(size.split("x")[0])
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("image/png")
+        assert response.content[:8] == b"\x89PNG\r\n\x1a\n"
+        assert int.from_bytes(response.content[16:20], "big") == expected_dimension
+        assert int.from_bytes(response.content[20:24], "big") == expected_dimension
+    assert touch_icon.status_code == 200
+    assert int.from_bytes(touch_icon.content[16:20], "big") == 180
+    assert int.from_bytes(touch_icon.content[20:24], "big") == 180
+
+
 def test_gamification_requires_auth_and_own_completion(tmp_path, monkeypatch):
     monkeypatch.setenv("GASSI_SESSION_SECRET", "test-session-secret-that-is-long-enough")
     monkeypatch.setattr(
