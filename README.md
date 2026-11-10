@@ -29,6 +29,9 @@ Wochenplan** und stellt ihn als Tabelle dar.
   progressiv (10, 25, 45, 70, … Punkte). Runden werden nur im jeweiligen
   Zeitfenster mit 30 Minuten Toleranz gestartet; manuelle Runden laufen über
   „Jetzt Gassi gehen“ und „Gassi-Runde beenden“.
+- Installable PWA: add the app to the Home Screen from iOS Safari or install it
+  in Android Chrome. On phones, the start/stop action stays fixed and
+  touch-friendly; GPS tracking and offline recording are not included.
 - 🐾 Übernahme und gemeinsame Runden: Eine andere Person kann eine geplante Runde
   mit Zustimmung übernehmen. Gemeinsam erfasste Runden zählen für jede beteiligte
   Person und schalten gemeinsame Runden- sowie Gruppengrößen-Abzeichen frei.
