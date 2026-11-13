@@ -13,6 +13,9 @@ BADGE_DEFINITIONS = (
     ("first-walk", "Erste Runde"),
     ("ten-walks", "10 Runden"),
     ("fifty-walks", "50 Runden"),
+    ("five-kilometer-walk", "5 km am Stück"),
+    ("ten-kilometer-walk", "10 km am Stück"),
+    ("twenty-kilometer-walk", "20 km am Stück"),
     ("full-week", "Volle Woche"),
     ("ten-day-streak", "10 Tage am Stück"),
     ("ten-round-streak", "10 Runden am Stück"),
@@ -109,6 +112,21 @@ def badge_progress(
             for row in rows
             if row.get("walk_type") == "extra"
         })
+        reached = value >= target
+        return {
+            **definition,
+            "progress": target if already_earned else min(value, target),
+            "target": target,
+            "show_progress": True,
+            "earned": already_earned or reached,
+            "reached_now": reached,
+        }
+
+    if condition_type == "distance-at-least":
+        value = max(
+            (row.get("distance_meters") or 0 for row in rows),
+            default=0,
+        )
         reached = value >= target
         return {
             **definition,

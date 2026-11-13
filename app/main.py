@@ -62,6 +62,17 @@ PUSH_SERVICE_HOSTS = {
 }
 RELEASE_NEWS = (
     {
+        "id": "0.6.0-ios-walk-distance",
+        "version": "0.6.0",
+        "title": "Gassirunden mit Streckenmessung",
+        "body": (
+            "Die iOS-Begleit-App erfasst die Gesamtstrecke auch bei gesperrtem "
+            "Bildschirm. Gespeichert wird keine GPS-Route. Für Runden ab 5, 10 und "
+            "20 km gibt es Langstrecken-Abzeichen; bei einem neuen persönlichen "
+            "Streckenrekord erhältst du eine Meldung."
+        ),
+    },
+    {
         "id": "0.5.0-extra-walks",
         "version": "0.5.0",
         "title": "Extra-Runden",
@@ -315,6 +326,7 @@ class WalkCompletionIn(BaseModel):
 
 class WalkEndIn(BaseModel):
     dog_ids: list[int] = Field(default_factory=list)
+    distance_meters: int | None = Field(default=None, ge=0, le=100_000)
 
 
 class WalkTakeoverRequestIn(BaseModel):
@@ -1094,7 +1106,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             raise HTTPException(422, "person_id ist im Entwicklungsmodus erforderlich")
         return requested_person_id
 
-    def sync_person_badges(person_id: int) -> None:
+    def sync_person_badges(person_id: int) -> set[str]:
         completions = db.list_walk_completions(person_id)
         already_earned = {row["badge_id"] for row in db.list_person_badges(person_id)}
         definitions = db.badge_definitions()
@@ -1118,6 +1130,7 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                 and definition["id"] not in reached_ids
             ],
         )
+        return reached_ids - already_earned
 
     def stored_badges() -> dict[int, set[str]]:
         badges: dict[int, set[str]] = {}
@@ -1440,17 +1453,28 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
         dog_ids = validate_dog_ids_by_person(
             [owner_id], {owner_id: body.dog_ids if body else []}
         )[owner_id]
+        distance_meters = body.distance_meters if body else None
+        previous_best = db.max_distance_meters(owner_id)
         try:
             result = db.finish_walk(
                 owner_id,
                 berlin_now().astimezone(timezone.utc).isoformat(timespec="seconds"),
                 dog_ids=dog_ids,
+                distance_meters=distance_meters,
             )
         except sqlite3.IntegrityError:
             raise HTTPException(404, "Hund nicht gefunden")
         if result is None:
             raise HTTPException(404, "Keine aktive Gassi-Runde vorhanden")
-        sync_person_badges(owner_id)
+        newly_earned_badges = sync_person_badges(owner_id)
+        recorded_distance = result["distance_meters"]
+        result["personal_record"] = bool(
+            result["created"]
+            and recorded_distance is not None
+            and recorded_distance > 0
+            and (previous_best is None or recorded_distance > previous_best)
+        )
+        result["new_badges"] = sorted(newly_earned_badges) if result["created"] else []
         return {"ok": True, **result}
 
     @app.put("/api/completions")

@@ -68,6 +68,13 @@ function fmtTime(iso) {
   }).format(new Date(iso));
 }
 
+function fmtDistance(meters) {
+  const kilometers = new Intl.NumberFormat("de-DE", {
+    maximumFractionDigits: 1,
+  }).format(meters / 1000);
+  return `${kilometers} km`;
+}
+
 function parseWalkTarget(route) {
   const match = /^walk\/(date|weekday)\/([^/]+)\/(morning|noon|evening)\/(\d+)$/.exec(route);
   if (!match) return null;
@@ -455,6 +462,12 @@ function renderGamification() {
       ? ` · ${completion.dog_names.join(", ")}`
       : " · Hunde nicht erfasst";
     row.appendChild(dogs);
+    if (completion.distance_meters != null) {
+      const distance = document.createElement("span");
+      distance.className = "completion-distance";
+      distance.textContent = ` · ${fmtDistance(completion.distance_meters)}`;
+      row.appendChild(distance);
+    }
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "secondary";
@@ -987,7 +1000,9 @@ function renderBadgeCatalog() {
         const hasStreak = Number.isInteger(badge.current_streak);
         progress.textContent = hasStreak
           ? `${badge.current_streak}/${badge.best_streak}`
-          : `${badge.progress}/${badge.target}`;
+          : badge.condition_type === "distance-at-least"
+            ? `${fmtDistance(badge.progress)}/${fmtDistance(badge.target)}`
+            : `${badge.progress}/${badge.target}`;
         button.appendChild(progress);
       } else if (badge.earned) {
         const earnedMark = document.createElement("span");
@@ -999,7 +1014,9 @@ function renderBadgeCatalog() {
       button.setAttribute("aria-label", badge.show_progress
         ? Number.isInteger(badge.current_streak)
           ? `${badge.title}, aktuelle Serie ${badge.current_streak}, Bestwert ${badge.best_streak}`
-          : `${badge.title}, ${badge.earned ? "erreicht" : "Fortschritt"} ${badge.progress} von ${badge.target}`
+          : badge.condition_type === "distance-at-least"
+            ? `${badge.title}, ${badge.earned ? "erreicht" : "Fortschritt"} ${fmtDistance(badge.progress)} von ${fmtDistance(badge.target)}`
+            : `${badge.title}, ${badge.earned ? "erreicht" : "Fortschritt"} ${badge.progress} von ${badge.target}`
         : `${badge.title}${badge.earned ? ", freigeschaltet" : ""}`);
       button.onclick = () => navigateApp(`badge/${badge.id}`);
       items.appendChild(button);
@@ -1018,6 +1035,9 @@ function renderBadgeCatalog() {
 function badgeConditionText(badge) {
   if (badge.condition_type === "completion-count") {
     return `Erledige ${badge.target} Gassirunden.`;
+  }
+  if (badge.condition_type === "distance-at-least") {
+    return `Erreiche mindestens ${fmtDistance(badge.target)} auf einer einzelnen Gassirunde.`;
   }
   if (badge.condition_type === "full-iso-week") {
     return "Erledige mindestens eine Gassirunde an jedem der sieben Tage einer ISO-Kalenderwoche.";
@@ -1042,7 +1062,11 @@ async function loadBadgeDetail(id) {
   document.getElementById("badgeDetailProgressText").textContent = badge.show_progress
     ? (hasStreak
       ? `Aktuelle Serie: ${badge.current_streak}/${badge.best_streak}`
-      : (badge.earned ? "Freigeschaltet" : `Fortschritt: ${badge.progress}/${badge.target}`))
+      : badge.condition_type === "distance-at-least"
+        ? (badge.earned
+          ? "Freigeschaltet"
+          : `Fortschritt: ${fmtDistance(badge.progress)}/${fmtDistance(badge.target)}`)
+        : (badge.earned ? "Freigeschaltet" : `Fortschritt: ${badge.progress}/${badge.target}`))
     : (badge.earned ? "Freigeschaltet" : "Noch nicht freigeschaltet");
   const progress = document.getElementById("badgeDetailProgress");
   progress.hidden = !badge.show_progress;

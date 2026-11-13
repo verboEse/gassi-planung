@@ -48,6 +48,26 @@ def test_total_badges_and_duplicate_completion():
     }
 
 
+def test_distance_badge_uses_the_longest_measured_walk():
+    badge = badge_definition("distance-at-least", target=5000)
+    walks = [
+        {"date": "2026-10-12", "slot": "morning", "distance_meters": 4999},
+        {"date": "2026-10-12", "slot": None, "walk_type": "extra", "distance_meters": 4200},
+    ]
+
+    progress = badge_progress(badge, walks, False)
+    assert progress["progress"] == 4999
+    assert not progress["reached_now"]
+
+    progress = badge_progress(
+        badge,
+        walks + [{"date": "2026-10-13", "slot": "noon", "distance_meters": 5000}],
+        False,
+    )
+    assert progress["progress"] == 5000
+    assert progress["reached_now"]
+
+
 def test_full_week_badge_candidate():
     full_week = [completion(f"2026-10-{day:02d}") for day in range(12, 19)]
     assert "full-week" in {badge["id"] for badge in summarize_completions(full_week)["badges"]}

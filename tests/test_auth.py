@@ -175,19 +175,22 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         news = client.get("/api/news").json()["news"]
-        assert len(news) == 4
-        assert news[0]["version"] == "0.5.0"
-        assert news[0]["title"] == "Extra-Runden"
-        assert "zehn Extra-Runden" in news[0]["body"]
-        assert news[1]["version"] == "0.4.0"
-        assert news[1]["title"] == "Gassi-Hinweise vor dem Start"
-        assert "abbrechen" in news[1]["body"]
-        assert news[2]["version"] == "0.3.0"
-        assert news[2]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
-        assert "Bestwert" in news[2]["body"]
-        assert news[3]["version"] == "0.2.0"
-        assert "Mehr Übersicht" in news[3]["title"]
-        assert "Verbesserungsvorschläge" in news[3]["body"]
+        assert len(news) == 5
+        assert news[0]["version"] == "0.6.0"
+        assert news[0]["title"] == "Gassirunden mit Streckenmessung"
+        assert "20 km" in news[0]["body"]
+        assert news[1]["version"] == "0.5.0"
+        assert news[1]["title"] == "Extra-Runden"
+        assert "zehn Extra-Runden" in news[1]["body"]
+        assert news[2]["version"] == "0.4.0"
+        assert news[2]["title"] == "Gassi-Hinweise vor dem Start"
+        assert "abbrechen" in news[2]["body"]
+        assert news[3]["version"] == "0.3.0"
+        assert news[3]["title"] == "Neue geheime Abzeichen und Serien-Erfolge"
+        assert "Bestwert" in news[3]["body"]
+        assert news[4]["version"] == "0.2.0"
+        assert "Mehr Übersicht" in news[4]["title"]
+        assert "Verbesserungsvorschläge" in news[4]["body"]
         assert all("Admin" not in item["title"] + item["body"] for item in news)
         for item in news:
             assert client.post(f"/api/news/{item['id']}/read").status_code == 204
@@ -204,7 +207,7 @@ def test_release_news_is_account_scoped_and_read_state_persists(tmp_path, monkey
             "display_name": "Admin", "password": "admin family password",
         }).status_code == 200
         admin_news = client.get("/api/news").json()["news"]
-        assert len(admin_news) == 4
+        assert len(admin_news) == 5
         for item in admin_news:
             assert client.post(f"/api/news/{item['id']}/read").status_code == 204
         assert client.get("/api/news").json()["news"] == []
@@ -485,9 +488,10 @@ def test_badge_catalog_seasons_and_opt_in_participants(tmp_path, monkeypatch):
             "display_name": "Jan", "password": "jan family password",
         }).status_code == 200
         current = client.get("/api/badges").json()
-        assert current["progress"]["available"] == 15
+        assert current["progress"]["available"] == 18
         current_ids = {badge["id"] for badge in current["badges"]}
         assert {
+            "five-kilometer-walk", "ten-kilometer-walk", "twenty-kilometer-walk",
             "first-shared-walk", "ten-shared-walks", "fifty-shared-walks",
             "three-person-walk", "four-plus-walk",
             "st-nicholas-walk-2026", "winter-solstice-walk-2026",
