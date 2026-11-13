@@ -109,6 +109,8 @@ CREATE TABLE {if_not_exists}{table_name} (
     off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1)),
     created_at TEXT NOT NULL,
     shared_walk_id INTEGER REFERENCES shared_walks(id) ON DELETE SET NULL,
+    distance_meters INTEGER
+        CHECK (distance_meters IS NULL OR distance_meters BETWEEN 0 AND 100000),
     CHECK (
         (walk_type = 'planned' AND slot IS NOT NULL)
         OR (walk_type = 'extra' AND slot IS NULL AND off_plan = 0 AND shared_walk_id IS NULL)
@@ -299,6 +301,9 @@ BADGE_SEEDS = [
     ("first-walk", "start-discovery", "Erste Runde", "Erledige deine erste Gassirunde.", "completion-count", '{"source":"any"}', 1, None, None, "current-count", "seed"),
     ("ten-walks", "walk-milestones", "10 Runden", "Erledige zehn Gassirunden.", "completion-count", '{"source":"any"}', 10, None, None, "current-count", "bronze-medal"),
     ("fifty-walks", "walk-milestones", "50 Runden", "Erledige fünfzig Gassirunden.", "completion-count", '{"source":"any"}', 50, None, None, "current-count", "gold-medal"),
+    ("five-kilometer-walk", "walk-milestones", "5 km am Stück", "Erreiche mindestens 5 km auf einer einzelnen Gassirunde.", "distance-at-least", '{}', 5000, None, None, "historical", "bronze-medal"),
+    ("ten-kilometer-walk", "walk-milestones", "10 km am Stück", "Erreiche mindestens 10 km auf einer einzelnen Gassirunde.", "distance-at-least", '{}', 10000, None, None, "historical", "seven-paws"),
+    ("twenty-kilometer-walk", "walk-milestones", "20 km am Stück", "Erreiche mindestens 20 km auf einer einzelnen Gassirunde.", "distance-at-least", '{}', 20000, None, None, "historical", "gold-medal"),
     ("full-week", "streaks-habits", "Volle Woche", "Erledige mindestens eine Runde an jedem Tag einer ISO-Kalenderwoche.", "full-iso-week", '{}', 7, None, None, "historical", "seven-paws"),
     ("first-shared-walk", "community-sharing", "Gemeinsam gestartet", "Erledige deine erste gemeinsame Gassirunde.", "shared-walk-count", '{}', 1, None, None, "current-count", "heart-paws"),
     ("ten-shared-walks", "community-sharing", "Teamgeist 10", "Erledige zehn gemeinsame Gassirunden.", "shared-walk-count", '{}', 10, None, None, "current-count", "bronze-medal"),
@@ -434,6 +439,11 @@ class Database:
                 con.execute(
                     "ALTER TABLE walk_completions ADD COLUMN off_plan "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))"
+                )
+            if "distance_meters" not in completion_cols:
+                con.execute(
+                    "ALTER TABLE walk_completions ADD COLUMN distance_meters INTEGER "
+                    "CHECK (distance_meters IS NULL OR distance_meters BETWEEN 0 AND 100000)"
                 )
             con.execute(WALK_COMPLETIONS_INDEX_DDL)
             con.execute(DOGS_DDL)
@@ -630,18 +640,18 @@ class Database:
                     con.execute("""
                         INSERT INTO walk_completions_new
                             (id, person_id, walk_date, slot, walk_type, source,
-                             off_plan, created_at, shared_walk_id)
+                             off_plan, created_at, shared_walk_id, distance_meters)
                         SELECT id, person_id, walk_date, slot, walk_type, source,
-                               off_plan, created_at, shared_walk_id
+                               off_plan, created_at, shared_walk_id, distance_meters
                         FROM walk_completions
                     """)
                 else:
                     con.execute("""
                         INSERT INTO walk_completions_new
                             (id, person_id, walk_date, slot, walk_type, source,
-                             off_plan, created_at, shared_walk_id)
+                             off_plan, created_at, shared_walk_id, distance_meters)
                         SELECT id, person_id, walk_date, slot, 'planned', source,
-                               off_plan, created_at, shared_walk_id
+                               off_plan, created_at, shared_walk_id, distance_meters
                         FROM walk_completions
                     """)
                 con.execute("DROP TABLE walk_completions")
@@ -1750,7 +1760,7 @@ class Database:
         query = """
             SELECT c.id AS completion_id, c.person_id, c.walk_date AS date,
                    c.slot, c.walk_type,
-                   c.source, c.off_plan, c.created_at,
+                   c.source, c.off_plan, c.created_at, c.distance_meters,
                    c.shared_walk_id,
                    CASE WHEN c.shared_walk_id IS NULL THEN 0 ELSE (
                        SELECT count(*) FROM walk_completions members
@@ -1782,7 +1792,8 @@ class Database:
                     key: row[key]
                     for key in (
                         "completion_id", "person_id", "date", "slot", "walk_type",
-                        "source", "off_plan", "created_at", "shared_walk_id",
+                        "source", "off_plan", "created_at", "distance_meters",
+                        "shared_walk_id",
                         "shared_group_size",
                     )
                 }
@@ -1794,6 +1805,18 @@ class Database:
                 completion["dog_ids"].append(row["dog_id"])
                 completion["dog_names"].append(row["dog_name"])
         return completions
+
+    def max_distance_meters(self, person_id: int) -> int | None:
+        with self._connect() as con:
+            row = con.execute(
+                """
+                SELECT MAX(distance_meters)
+                FROM walk_completions
+                WHERE person_id = ? AND distance_meters > 0
+                """,
+                (person_id,),
+            ).fetchone()
+        return row[0] if row and row[0] is not None else None
 
     def active_walk(self, person_id: int) -> dict | None:
         with self._connect() as con:
@@ -1835,7 +1858,11 @@ class Database:
         return dict(row)
 
     def finish_walk(
-        self, person_id: int, ended_at: str, dog_ids: list[int] | None = None
+        self,
+        person_id: int,
+        ended_at: str,
+        dog_ids: list[int] | None = None,
+        distance_meters: int | None = None,
     ) -> dict | None:
         with self._connect() as con:
             con.execute("BEGIN IMMEDIATE")
@@ -1851,12 +1878,13 @@ class Database:
             cur = con.execute(
                 """
                 INSERT OR IGNORE INTO walk_completions
-                    (person_id, walk_date, slot, walk_type, source, off_plan, created_at)
-                VALUES (?, ?, ?, ?, 'manual', ?, ?)
+                    (person_id, walk_date, slot, walk_type, source, off_plan,
+                     created_at, distance_meters)
+                VALUES (?, ?, ?, ?, 'manual', ?, ?, ?)
                 """,
                 (
                     row["person_id"], row["date"], row["slot"], row["walk_type"],
-                    row["off_plan"], ended_at,
+                    row["off_plan"], ended_at, distance_meters,
                 ),
             )
             completion_id = cur.lastrowid if cur.rowcount > 0 else None
@@ -1870,6 +1898,14 @@ class Database:
             if dog_ids is not None:
                 if completion_id is not None:
                     self._replace_completion_dogs(con, completion_id, dog_ids)
+            completion = (
+                con.execute(
+                    "SELECT distance_meters FROM walk_completions WHERE id = ?",
+                    (completion_id,),
+                ).fetchone()
+                if completion_id is not None
+                else None
+            )
             con.execute("DELETE FROM active_walks WHERE person_id = ?", (person_id,))
         return {
             "completion_id": completion_id,
@@ -1880,6 +1916,7 @@ class Database:
             "source": "manual",
             "off_plan": bool(row["off_plan"]),
             "created": cur.rowcount > 0,
+            "distance_meters": completion["distance_meters"] if completion else None,
         }
 
     def award_badges(self, person_id: int, badge_ids: list[str]) -> None:
