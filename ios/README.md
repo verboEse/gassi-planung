@@ -1,35 +1,38 @@
-# iOS companion app
+# iOS-Begleit-App
 
-The native iOS companion app starts and ends planned or extra walks through the
-existing authenticated API. It uses Core Location background updates so a walk
-continues to be measured while the screen is locked.
+Die native iOS-Begleit-App startet und beendet geplante Runden sowie
+Extra-Runden über die bestehende, angemeldete API. Mit Core-Location-
+Hintergrundaktualisierungen wird die Strecke auch bei gesperrtem Bildschirm
+weiter erfasst.
 
-## Build and sign
+## Erstellen und signieren
 
-Open `GassiPlanung/GassiPlanung.xcodeproj` in Xcode. The deployment target is
-iOS 17. Sign the `GassiPlanung` target with the Apple development team that will
-distribute the app. At first launch, enter the HTTPS address of the server and
-sign in with an existing Gassi-Planung account.
+Öffne `GassiPlanung/GassiPlanung.xcodeproj` in Xcode. Die App erfordert
+iOS 17 oder neuer. Signiere das Ziel `GassiPlanung` mit dem Apple-Entwicklerteam,
+das die App verteilen soll. Gib beim ersten Start die HTTPS-Adresse des Servers
+ein und melde dich mit einem bestehenden Gassi-Planung-Konto an.
 
-The app uses the server's signed session cookie; it does not save the password.
-It requires the iOS location permission **Always** and the Location Updates
-background mode. If location permission is unavailable, the app does not start
-a server-side walk.
+Die App verwendet das signierte Sitzungscookie des Servers und speichert das
+Passwort nicht. Sie benötigt die iOS-Standortberechtigung **Immer** und den
+Hintergrundmodus für Standortaktualisierungen. Ohne Standortberechtigung startet
+die App keine Gassirunde auf dem Server.
 
-## Distance and privacy
+## Strecke und Datenschutz
 
-The app filters stale or inaccurate location samples and accumulates distance
-in memory. While a walk is active, only the aggregate meter count is saved
-locally so it can be restored after the app restarts. Coordinates are neither
-persisted nor sent to the server. Ending a walk sends only the optional
-`distance_meters` value with its existing walk completion.
+Die App filtert veraltete und ungenaue Standortmessungen und summiert die
+Strecke im Arbeitsspeicher. Während einer aktiven Runde wird lokal nur die
+Gesamtstrecke in Metern gespeichert, damit sie nach einem Neustart der App
+wiederhergestellt werden kann. Koordinaten werden weder gespeichert noch an den
+Server übertragen. Beim Beenden der Runde wird ausschließlich der optionale
+Wert `distance_meters` zusammen mit dem bestehenden Rundeneintrag übertragen.
 
-Long-distance badges are awarded at 5, 10, and 20 km per walk. A new personal
-distance record is reported in the app after the server confirms the completion.
-If no usable GPS sample was received, the walk can still be completed without
-a distance value.
+Langstrecken-Abzeichen werden für einzelne Runden ab 5, 10 und 20 km vergeben.
+Einen neuen persönlichen Streckenrekord meldet die App, sobald der Server den
+Rundenabschluss bestätigt hat. Wurde keine brauchbare GPS-Messung empfangen,
+kann die Runde trotzdem ohne Streckenangabe beendet werden.
 
-The accumulator's focused self-check can be run on macOS with:
+Der gezielte Selbsttest für die Streckenberechnung lässt sich unter macOS
+folgendermaßen ausführen:
 
 ```sh
 swiftc ios/GassiPlanung/WalkDistanceAccumulator.swift tests/check_walk_distance.swift -o /tmp/check-walk-distance

@@ -63,6 +63,55 @@ Dann im Browser öffnen: <http://localhost:8585>
 Der Datenbankpfad ist per Umgebungsvariable `GASSI_DB` konfigurierbar
 (Default: `./gassi.sqlite3`). Anmeldungen sind standardmäßig erforderlich.
 
+## Native iOS-App direkt auf dem iPhone testen
+
+Die native iOS-Begleit-App ist eine separate Anwendung und nicht mit der
+installierbaren Web-App identisch. So installierst du eine Entwicklungsversion
+direkt auf deinem eigenen iPhone:
+
+1. Installiere die vollständige Xcode-Version auf einem Mac. Die Xcode Command
+   Line Tools allein reichen nicht aus. Die App erfordert iOS 17 oder neuer.
+2. Wechsle auf den App-Branch, solange PR #33 noch nicht in `main` übernommen
+   wurde. Nach der Übernahme verwendest du stattdessen `main`. Öffne anschließend
+   das Xcode-Projekt:
+
+   ```bash
+   git fetch origin
+   git switch --track origin/feat/8-ios-walk-distance
+   open ios/GassiPlanung/GassiPlanung.xcodeproj
+   ```
+
+   Falls der Branch bereits in `main` übernommen wurde, verwende stattdessen:
+
+   ```bash
+   git switch main
+   git pull --ff-only
+   open ios/GassiPlanung/GassiPlanung.xcodeproj
+   ```
+
+3. Verbinde dein iPhone mit dem Mac und entsperre es. Wähle in Xcode das Projekt
+   `GassiPlanung` und dessen App-Ziel aus. Öffne **Signing & Capabilities**,
+   aktiviere die automatische Signierung und wähle dein **Personal Team**
+   (persönliches Team) aus. Falls dein Apple-Konto noch nicht angezeigt wird,
+   füge es unter **Xcode → Settings → Accounts** hinzu.
+4. Wähle dein iPhone als Zielgerät und starte die App mit **Product → Run**
+   (⌘R). Falls du dazu aufgefordert wirst, aktiviere den **Entwicklermodus**
+   auf dem iPhone unter **Einstellungen → Datenschutz & Sicherheit →
+   Entwicklermodus**, starte das Gerät neu und bestätige die Aktivierung.
+   Bestätige bei Bedarf das Entwicklerprofil unter **Einstellungen → Allgemein →
+   VPN und Geräteverwaltung**.
+5. Öffne die App, gib die HTTPS-Adresse deines Gassi-Planung-Servers ein und
+   melde dich mit deinem bestehenden Konto an. Erlaube den Standortzugriff
+   **Immer**; ohne diese Berechtigung kann die App keine Runde starten. Sperre
+   während eines Testrundgangs den Bildschirm, um die Hintergrundmessung zu
+   überprüfen.
+
+So wird eine Entwicklungsversion ausschließlich auf dem ausgewählten Gerät
+installiert; es handelt sich nicht um eine TestFlight- oder App-Store-Version.
+Ein Personal Team genügt zum Testen auf dem eigenen Gerät. Für eine Verteilung
+an weitere Personen ist ein Apple-Developer-Team und beispielsweise TestFlight
+erforderlich.
+
 ## Docker-Veröffentlichung
 
 `compose.yaml` veröffentlicht die App nicht direkt. Sie hängt sich in das
