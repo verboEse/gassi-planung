@@ -71,6 +71,20 @@ class TestMigration:
         db = Database(db_file)  # zweiter Start: keine Doppel-Migration
         assert db.prefs_all()[(1, "morning", 1)] == 1
 
+    def test_distance_column_migration_preserves_existing_walks(self, tmp_path):
+        db_file = tmp_path / "distance-migration.sqlite3"
+        db = Database(db_file)
+        person = db.add_person("Jan")
+        db.add_walk_completion(person["id"], "2026-10-12", "morning", "plan")
+
+        with sqlite3.connect(db_file) as con:
+            con.execute("ALTER TABLE walk_completions DROP COLUMN distance_meters")
+
+        migrated = Database(db_file)
+        completion = migrated.list_walk_completions(person["id"])[0]
+        assert completion["distance_meters"] is None
+        assert migrated.max_distance_meters(person["id"]) is None
+
     def test_dog_care_schema_migrates_without_changing_walks_or_plans(self, tmp_path):
         db_file = tmp_path / "dog-care-migration.sqlite3"
         db = Database(db_file)

@@ -167,6 +167,67 @@ class TestGamification:
         assert client.post(f"/api/walks/end?person_id={person['id']}").status_code == 404
         assert client.get("/api/gamification").json()["persons"][0]["points"] == 1
 
+    def test_walk_distance_persists_awards_badges_and_detects_records(
+        self, client, monkeypatch
+    ):
+        person = add_person(client, "Jan")
+        set_time = lambda hour, minute: monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, hour, minute, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+
+        set_time(6, 30)
+        assert client.post(f"/api/walks/start?person_id={person['id']}").status_code == 200
+        set_time(7, 0)
+        first = client.post(
+            f"/api/walks/end?person_id={person['id']}",
+            json={"distance_meters": 5000},
+        )
+        assert first.status_code == 200
+        assert first.json()["personal_record"]
+        assert "five-kilometer-walk" in first.json()["new_badges"]
+
+        set_time(10, 0)
+        extra_url = f"/api/walks/start?person_id={person['id']}&walk_type=extra"
+        assert client.post(extra_url).status_code == 200
+        invalid = client.post(
+            f"/api/walks/end?person_id={person['id']}",
+            json={"distance_meters": 100001},
+        )
+        assert invalid.status_code == 422
+        assert client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()["walk_status"]["active"]
+        set_time(10, 30)
+        second = client.post(
+            f"/api/walks/end?person_id={person['id']}",
+            json={"distance_meters": 6000},
+        )
+        assert second.status_code == 200
+        assert second.json()["personal_record"]
+
+        set_time(11, 0)
+        assert client.post(extra_url).status_code == 200
+        set_time(11, 30)
+        third = client.post(
+            f"/api/walks/end?person_id={person['id']}",
+            json={"distance_meters": 5500},
+        )
+        assert third.status_code == 200
+        assert not third.json()["personal_record"]
+        assert third.json()["new_badges"] == []
+
+        progress = client.get(
+            f"/api/gamification?person_id={person['id']}"
+        ).json()
+        jan = progress["persons"][0]
+        assert jan["points"] == 1
+        assert "5 km am Stück" in {badge["label"] for badge in jan["badges"]}
+        assert [
+            completion["distance_meters"] for completion in progress["completions"]
+        ] == [5000, 6000, 5500]
+
     def test_extra_walk_can_start_outside_schedule_without_changing_planned_rules(
         self, client, monkeypatch
     ):
