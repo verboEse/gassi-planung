@@ -62,6 +62,15 @@ PUSH_SERVICE_HOSTS = {
 }
 RELEASE_NEWS = (
     {
+        "id": "0.6.0-takeover-requests",
+        "version": "0.6.0",
+        "title": "Übernahmeanfragen mit mehr Kontrolle",
+        "body": (
+            "Vor dem Senden einer Übernahmeanfrage siehst du die zuständige Person, "
+            "den Tag und den Zeitslot. Offene Anfragen kannst du zurückziehen."
+        ),
+    },
+    {
         "id": "0.5.0-extra-walks",
         "version": "0.5.0",
         "title": "Extra-Runden",
@@ -1246,6 +1255,17 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             load_vapid_configuration(),
         )
         return {"ok": True, "request": request}
+
+    @app.delete("/api/walk-takeovers/{request_id}")
+    def cancel_walk_takeover(
+        request_id: int,
+        person_id: int | None = Query(None, ge=1),
+        account: dict | None = Depends(require_account),
+    ):
+        requester_id = completion_person_id(person_id, account)
+        if not db.cancel_walk_takeover_request(request_id, requester_id):
+            raise HTTPException(404, "Übernahmeanfrage nicht gefunden oder bereits entschieden")
+        return {"ok": True}
 
     @app.put("/api/walk-takeovers/{request_id}")
     def decide_walk_takeover(

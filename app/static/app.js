@@ -22,6 +22,7 @@ const state = {
 let authMode = "login";
 let weekRequest = null;
 let groupWalkTarget = null;
+let takeoverRequestTarget = null;
 let takeoverApprovalTarget = null;
 let dogSelectionResolver = null;
 let calendarWalkStartInFlight = false;
@@ -326,7 +327,7 @@ function renderPlan() {
       } else if (incoming?.status === "shared" || outgoing?.status === "shared") {
         controls = '<small class="walk-request-status">Gemeinsame Runde bestätigt</small>';
       } else if (outgoing?.status === "pending") {
-        controls = '<small class="walk-request-status">Anfrage läuft</small>';
+        controls = `<div class="walk-controls"><small class="walk-request-status">Anfrage läuft</small><button type="button" class="secondary takeover-cancel" data-request-id="${outgoing.id}">Zurückziehen</button></div>`;
       } else if (outgoing?.status === "approved") {
         controls = '<small class="walk-request-status">Übernahme freigegeben</small>';
       } else if (outgoing?.status === "declined") {
@@ -343,6 +344,10 @@ function renderPlan() {
       button.dataset.walkSlot,
       button.classList.contains("done"),
     ).catch(e => toast(e.message));
+  });
+  wrap.querySelectorAll(".takeover-cancel").forEach(button => {
+    button.onclick = () => cancelTakeover(Number(button.dataset.requestId))
+    .catch(e => toast(e.message));
   });
   wrap.querySelectorAll(".takeover-decision").forEach(button => {
     const requestId = Number(button.dataset.requestId);
@@ -684,6 +689,32 @@ async function requestTakeover(date, slot) {
   });
   toast("Übernahmeanfrage gesendet");
   await loadWeek(true);
+}
+
+async function cancelTakeover(requestId) {
+  const personParam = state.me
+    ? ""
+    : `?person_id=${encodeURIComponent(state.selectedPerson)}`;
+  await api(`/api/walk-takeovers/${requestId}${personParam}`, { method: "DELETE" });
+  toast("Übernahmeanfrage zurückgezogen");
+  await loadWeek(true);
+}
+
+function openTakeoverRequestDialog(date, slot, assigneeId) {
+  const assignee = state.data?.persons?.find(person => person.id === assigneeId);
+  takeoverRequestTarget = { date, slot };
+  document.getElementById("takeoverRequestMessage").textContent =
+    `Die Runde ${SLOT_LABELS[slot]} am ${fmtDate(date)} ist ${assignee?.name || "der eingetragenen Person"} zugewiesen. Möchtest du eine Übernahmeanfrage senden?`;
+  document.getElementById("takeoverRequestDialog").showModal();
+}
+
+async function confirmTakeoverRequest() {
+  if (!takeoverRequestTarget) return;
+  const { date, slot } = takeoverRequestTarget;
+  document.getElementById("takeoverRequestDialog").close();
+  try {
+    await requestTakeover(date, slot);
+  } catch (error) { toast(error.message); }
 }
 
 async function decideTakeover(requestId, approved) {
@@ -1668,7 +1699,11 @@ document.getElementById("walkSessionButton").onclick = async () => {
       );
       if (ownTakeover?.status === "pending") return;
       if (walkStatus.assignee_id !== state.me?.person.id && ownTakeover?.status !== "approved") {
-        await requestTakeover(walkWindow.date, walkWindow.slot);
+        openTakeoverRequestDialog(
+          walkWindow.date,
+          walkWindow.slot,
+          walkStatus.assignee_id,
+        );
         return;
       }
     }
@@ -1779,6 +1814,13 @@ document.getElementById("dogSelectionDialog").addEventListener("close", () => {
   const resolve = dogSelectionResolver;
   dogSelectionResolver = null;
   resolve(null);
+});
+document.getElementById("takeoverRequestConfirmButton").onclick = confirmTakeoverRequest;
+document.getElementById("takeoverRequestCancelButton").onclick = () => {
+  document.getElementById("takeoverRequestDialog").close();
+};
+document.getElementById("takeoverRequestDialog").addEventListener("close", () => {
+  takeoverRequestTarget = null;
 });
 document.getElementById("takeoverApprovalConfirmButton").onclick = confirmTakeoverApproval;
 document.getElementById("takeoverApprovalCancelButton").onclick = () => {

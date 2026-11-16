@@ -1381,6 +1381,19 @@ class Database:
         assert row is not None
         return dict(row)
 
+    def cancel_walk_takeover_request(self, request_id: int, requester_id: int) -> bool:
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            cur = con.execute(
+                """
+                DELETE FROM walk_takeover_requests
+                WHERE id = ? AND requester_id = ? AND status = 'pending'
+                """,
+                (request_id, requester_id),
+            )
+            cancelled = cur.rowcount > 0
+        return cancelled
+
     def decide_walk_takeover_request(
         self, request_id: int, assignee_id: int, approved: bool, decided_at: str
     ) -> dict | None:
