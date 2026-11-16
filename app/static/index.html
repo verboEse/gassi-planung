@@ -289,6 +289,14 @@
     </div>
   </dialog>
   <div id="toast" class="toast" hidden></div>
+  <dialog id="takeoverRequestDialog" aria-labelledby="takeoverRequestTitle">
+    <h2 id="takeoverRequestTitle">Übernahmeanfrage senden?</h2>
+    <p id="takeoverRequestMessage"></p>
+    <div class="walk-controls">
+      <button id="takeoverRequestConfirmButton" type="button">Anfrage senden</button>
+      <button id="takeoverRequestCancelButton" class="secondary" type="button">Abbrechen</button>
+    </div>
+  </dialog>
   <dialog id="takeoverApprovalDialog" aria-labelledby="takeoverApprovalTitle">
     <h2 id="takeoverApprovalTitle">Übernahme freigeben?</h2>
     <p id="takeoverApprovalMessage"></p>
@@ -300,7 +308,7 @@
     </div>
   </dialog>
   <script src="/static/walk-guidance.js?v=1"></script>
-  <script src="/static/app.js?v=26"></script>
+  <script src="/static/app.js?v=27"></script>
 </body>
 
 </html>

@@ -449,6 +449,55 @@ class TestGamification:
         ).status_code == 200
         assert client.post(start_url).status_code == 200
 
+    def test_requester_can_cancel_only_pending_takeover(self, client, monkeypatch):
+        monkeypatch.setattr(
+            main_module,
+            "berlin_now",
+            lambda: datetime(2026, 1, 1, 6, 30, tzinfo=ZoneInfo("Europe/Berlin")),
+        )
+        monkeypatch.setattr(main_module, "send_event_push", lambda *args: None)
+        monkeypatch.setattr(
+            main_module, "load_vapid_configuration", lambda: (None, "mailto:test", "public")
+        )
+        jan = add_person(client, "Jan")
+        laura = add_person(client, "Laura")
+        day = next(
+            day for day in client.get("/api/plan?year=2026&week=1").json()["days"]
+            if day["date"] == "2026-01-01"
+        )
+        assignee_id = day["slots"]["morning"]["person_id"]
+        requester = laura if assignee_id == jan["id"] else jan
+        assignee = jan if assignee_id == jan["id"] else laura
+        request = client.post("/api/walk-takeovers", json={
+            "person_id": requester["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+        }).json()["request"]
+
+        assert client.delete(
+            f"/api/walk-takeovers/{request['id']}?person_id={assignee['id']}"
+        ).status_code == 404
+        cancelled = client.delete(
+            f"/api/walk-takeovers/{request['id']}?person_id={requester['id']}"
+        )
+        assert cancelled.status_code == 200
+        assert client.get(
+            f"/api/walk-takeovers?person_id={requester['id']}"
+        ).json()["requests"] == []
+
+        request = client.post("/api/walk-takeovers", json={
+            "person_id": requester["id"],
+            "date": "2026-01-01",
+            "slot": "morning",
+        }).json()["request"]
+        assert client.put(
+            f"/api/walk-takeovers/{request['id']}",
+            json={"person_id": assignee["id"], "approved": True},
+        ).status_code == 200
+        assert client.delete(
+            f"/api/walk-takeovers/{request['id']}?person_id={requester['id']}"
+        ).status_code == 404
+
     def test_invalid_completion_rejected(self, client, monkeypatch):
         person = add_person(client, "Jan")
         base = {"person_id": person["id"], "date": "2026-01-01", "source": "plan"}
