@@ -965,6 +965,18 @@ class TestWeekAndPlan:
         assert session_restore < news_load < plan_load
         assert "if (state.me) loadNews();" in initialize
 
+    def test_initial_profile_route_returns_to_plan(self, client):
+        script = client.get("/static/app.js").text
+        initialize = script.split("async function initialize() {", 1)[1].split(
+            "\n}\n\nsetAuthMode(", 1
+        )[0]
+        profile_route = initialize.index('if (location.hash === "#profile") {')
+        replace_route = initialize.index(
+            'history.replaceState(history.state, "", `${location.pathname}${location.search}#plan`);'
+        )
+        session_restore = initialize.index('state.me = await api("/api/me");')
+        assert profile_route < replace_route < session_restore
+
     def test_news_loader_does_not_skip_admin_accounts(self, client):
         script = client.get("/static/app.js").text
         news_loader = script.split("async function loadNews() {", 1)[1].split(

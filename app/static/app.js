@@ -1956,6 +1956,9 @@ async function loadNews() {
 }
 
 async function initialize() {
+  if (location.hash === "#profile") {
+    history.replaceState(history.state, "", `${location.pathname}${location.search}#plan`);
+  }
   const auth = document.getElementById("authSection");
   const content = document.getElementById("appContent");
   const nav = document.getElementById("weekNav");
