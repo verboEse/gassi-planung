@@ -440,6 +440,15 @@ class TestWalkCoordination:
         con.close()
 
         db = Database(path)
+        with db._connect() as con:
+            reminder = con.execute(
+                """
+                SELECT reminder_status, reminder_attempts, reminder_next_attempt_at,
+                       reminder_locked_until
+                FROM active_walks WHERE person_id = 1
+                """
+            ).fetchone()
+        assert tuple(reminder) == ("pending", 0, None, None)
         completion = db.list_walk_completions(1)[0]
         assert completion["date"] == "2026-10-12"
         assert completion["shared_walk_id"] is None

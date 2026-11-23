@@ -278,6 +278,8 @@ aktuellen Browsers; ohne Berechtigung bleibt der iCal-Alarm verfügbar. Unterst�
 werden Push-Endpunkte von Google FCM, Mozilla und Apple. Browser-Push und Kalender-
 App können dieselbe Erinnerung anzeigen; Kalender-Clients bestimmen selbst, wann sie
 den Feed aktualisieren und ob sie `VALARM` unterstützen.
+Ist eine Gassirunde nach zwei Stunden noch aktiv, wird einmalig per Browser-Push
+erinnert; sie bleibt bis zum manuellen Beenden aktiv.
 
 Der SQLite-Outbox-Dispatcher läuft im einzelnen FastAPI-Prozess und prüft fällige
 Erinnerungen alle 30 Sekunden. Temporäre Fehler werden höchstens dreimal versucht
