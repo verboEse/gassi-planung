@@ -35,6 +35,7 @@ from .db import Database
 from .gamification import badge_progress, group_progress, summarize_completions
 from .ical import SLOT_TIMES, WALK_WINDOW_TOLERANCE, build_ics
 from .reminders import (
+    dispatch_due_active_walk_reminders,
     dispatch_due_reminders,
     load_vapid_configuration,
     reminder_jobs,
@@ -61,6 +62,16 @@ PUSH_SERVICE_HOSTS = {
     "web.push.apple.com",
 }
 RELEASE_NEWS = (
+    {
+        "id": "0.7.0-active-walk-reminder",
+        "version": "0.7.0",
+        "title": "Gassirunden-Erinnerung",
+        "body": (
+            "Bei aktivierten Browser-Erinnerungen erinnern wir dich einmalig nach "
+            "zwei Stunden, wenn eine Runde noch läuft. Du beendest sie weiterhin "
+            "selbst in der App."
+        ),
+    },
     {
         "id": "0.6.0-takeover-requests",
         "version": "0.6.0",
@@ -1068,8 +1079,12 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
                         ]
                     )
                 jobs = reminder_jobs(plans, enabled_person_ids)
+                now = datetime.now(timezone.utc)
                 await dispatch_due_reminders(
-                    db, jobs, enabled_person_ids, datetime.now(timezone.utc), vapid, subject
+                    db, jobs, enabled_person_ids, now, vapid, subject
+                )
+                await dispatch_due_active_walk_reminders(
+                    db, enabled_person_ids, now, vapid, subject
                 )
             except Exception as error:
                 logger.warning("Reminder-Dispatcher fehlgeschlagen (%s)", type(error).__name__)

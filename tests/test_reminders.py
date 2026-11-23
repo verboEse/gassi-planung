@@ -7,7 +7,12 @@ from pywebpush import WebPushException
 from app import main as main_module
 from app.db import Database
 from app.main import create_app
-from app.reminders import dispatch_due_reminders, reminder_jobs, send_event_push
+from app.reminders import (
+    dispatch_due_active_walk_reminders,
+    dispatch_due_reminders,
+    reminder_jobs,
+    send_event_push,
+)
 
 
 def test_reminders_follow_slot_time_in_berlin_across_dst():
@@ -84,6 +89,134 @@ def read_outbox(db):
         return con.execute(
             "SELECT status, attempts, next_attempt_at FROM reminder_outbox"
         ).fetchone()
+
+
+def make_active_walk_case(tmp_path, filename, walk_type="planned"):
+    db = Database(tmp_path / filename)
+    person = db.add_person("Jan")
+    db.update_profile_preferences(person["id"], reminders_enabled=True)
+    db.save_push_subscription(
+        person["id"],
+        endpoint=f"https://fcm.googleapis.com/fcm/send/{person['id']}",
+        p256dh="key",
+        auth="auth",
+    )
+    started_at = datetime(2026, 7, 6, 3, 45, tzinfo=timezone.utc)
+    db.start_walk(
+        person["id"],
+        "2026-07-06",
+        "morning" if walk_type == "planned" else None,
+        started_at.isoformat(timespec="seconds"),
+        walk_type=walk_type,
+    )
+    return db, person, started_at
+
+
+def read_active_walk_reminder(db, person_id):
+    with db._connect() as con:
+        return con.execute(
+            """
+            SELECT reminder_status, reminder_attempts, reminder_next_attempt_at
+            FROM active_walks WHERE person_id = ?
+            """,
+            (person_id,),
+        ).fetchone()
+
+
+def test_active_walk_reminder_is_sent_once_after_two_hours(tmp_path):
+    for walk_type in ("planned", "extra"):
+        db, person, started_at = make_active_walk_case(
+            tmp_path, f"{walk_type}.sqlite3", walk_type
+        )
+        sent = []
+        sender = lambda _subscription, payload, *_args: sent.append(payload)
+        due_at = started_at + timedelta(hours=2)
+
+        asyncio.run(dispatch_due_active_walk_reminders(
+            db, {person["id"]}, due_at - timedelta(seconds=1), None,
+            "mailto:admin@example.test", sender,
+        ))
+        assert sent == []
+
+        asyncio.run(dispatch_due_active_walk_reminders(
+            db, {person["id"]}, due_at, None,
+            "mailto:admin@example.test", sender,
+        ))
+        assert len(sent) == 1
+        assert sent[0]["title"] == "Gassirunde noch aktiv"
+        assert sent[0]["tag"].startswith(f"gassi-active-walk-{person['id']}-")
+        assert read_active_walk_reminder(db, person["id"])["reminder_status"] == "sent"
+        assert db.active_walk(person["id"]) is not None
+
+        asyncio.run(dispatch_due_active_walk_reminders(
+            db, {person["id"]}, due_at + timedelta(seconds=30), None,
+            "mailto:admin@example.test", sender,
+        ))
+        assert len(sent) == 1
+
+
+def test_active_walk_reminder_is_skipped_when_ended_or_disabled(tmp_path):
+    ended_db, ended_person, ended_at = make_active_walk_case(
+        tmp_path, "ended.sqlite3"
+    )
+    ended_db.finish_walk(
+        ended_person["id"],
+        (ended_at + timedelta(hours=1)).isoformat(timespec="seconds"),
+    )
+    disabled_db, disabled_person, _disabled_at = make_active_walk_case(
+        tmp_path, "disabled.sqlite3"
+    )
+    disabled_db.update_profile_preferences(
+        disabled_person["id"], reminders_enabled=False
+    )
+    sent = []
+    sender = lambda *args: sent.append(args)
+    due_at = ended_at + timedelta(hours=2)
+
+    for db in (
+        ended_db,
+        disabled_db,
+    ):
+        asyncio.run(dispatch_due_active_walk_reminders(
+            db, db.enabled_reminder_person_ids(), due_at, None,
+            "mailto:admin@example.test", sender,
+        ))
+
+    assert sent == []
+    assert disabled_db.active_walk(disabled_person["id"]) is not None
+    assert read_active_walk_reminder(
+        disabled_db, disabled_person["id"]
+    )["reminder_status"] == "cancelled"
+
+
+def test_active_walk_reminder_retries_temporary_push_failure(tmp_path):
+    db, person, started_at = make_active_walk_case(tmp_path, "retry-active.sqlite3")
+    due_at = started_at + timedelta(hours=2)
+
+    class Response:
+        status_code = 503
+        headers = {}
+
+    def failing_sender(*_args):
+        raise WebPushException("temporary", response=Response())
+
+    asyncio.run(dispatch_due_active_walk_reminders(
+        db, {person["id"]}, due_at, None, "mailto:admin@example.test",
+        failing_sender,
+    ))
+    row = read_active_walk_reminder(db, person["id"])
+    assert tuple(row) == (
+        "pending", 1, (due_at + timedelta(seconds=30)).isoformat(timespec="seconds")
+    )
+
+    sent = []
+    asyncio.run(dispatch_due_active_walk_reminders(
+        db, {person["id"]}, due_at + timedelta(seconds=30), None,
+        "mailto:admin@example.test",
+        lambda _subscription, payload, *_args: sent.append(payload),
+    ))
+    assert len(sent) == 1
+    assert read_active_walk_reminder(db, person["id"])["reminder_status"] == "sent"
 
 
 def test_dispatch_sends_due_reminder_and_marks_it_sent(tmp_path):

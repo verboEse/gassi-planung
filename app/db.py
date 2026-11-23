@@ -187,6 +187,11 @@ CREATE TABLE {if_not_exists}{table_name} (
         CHECK (walk_type IN ('planned', 'extra')),
     started_at TEXT NOT NULL,
     off_plan INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1)),
+    reminder_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (reminder_status IN ('pending', 'sending', 'sent', 'cancelled')),
+    reminder_attempts INTEGER NOT NULL DEFAULT 0,
+    reminder_next_attempt_at TEXT,
+    reminder_locked_until TEXT,
     CHECK (
         (walk_type = 'planned' AND slot IS NOT NULL)
         OR (walk_type = 'extra' AND slot IS NULL AND off_plan = 0)
@@ -454,6 +459,20 @@ class Database:
                     "ALTER TABLE active_walks ADD COLUMN off_plan "
                     "INTEGER NOT NULL DEFAULT 0 CHECK (off_plan IN (0, 1))"
                 )
+            active_walk_additions = {
+                "reminder_status": (
+                    "TEXT NOT NULL DEFAULT 'pending' "
+                    "CHECK (reminder_status IN ('pending', 'sending', 'sent', 'cancelled'))"
+                ),
+                "reminder_attempts": "INTEGER NOT NULL DEFAULT 0",
+                "reminder_next_attempt_at": "TEXT",
+                "reminder_locked_until": "TEXT",
+            }
+            for column, definition in active_walk_additions.items():
+                if column not in active_walk_cols:
+                    con.execute(
+                        f"ALTER TABLE active_walks ADD COLUMN {column} {definition}"
+                    )
             con.execute(PUSH_SUBSCRIPTIONS_DDL)
             con.execute(PUSH_SUBSCRIPTIONS_PERSON_INDEX_DDL)
             con.execute(REMINDER_OUTBOX_DDL)
@@ -657,15 +676,23 @@ class Database:
                 if "walk_type" in active_info:
                     con.execute("""
                         INSERT INTO active_walks_new
-                            (person_id, walk_date, slot, walk_type, started_at, off_plan)
-                        SELECT person_id, walk_date, slot, walk_type, started_at, off_plan
+                            (person_id, walk_date, slot, walk_type, started_at, off_plan,
+                             reminder_status, reminder_attempts, reminder_next_attempt_at,
+                             reminder_locked_until)
+                        SELECT person_id, walk_date, slot, walk_type, started_at, off_plan,
+                               reminder_status, reminder_attempts, reminder_next_attempt_at,
+                               reminder_locked_until
                         FROM active_walks
                     """)
                 else:
                     con.execute("""
                         INSERT INTO active_walks_new
-                            (person_id, walk_date, slot, walk_type, started_at, off_plan)
-                        SELECT person_id, walk_date, slot, 'planned', started_at, off_plan
+                            (person_id, walk_date, slot, walk_type, started_at, off_plan,
+                             reminder_status, reminder_attempts, reminder_next_attempt_at,
+                             reminder_locked_until)
+                        SELECT person_id, walk_date, slot, 'planned', started_at, off_plan,
+                               reminder_status, reminder_attempts, reminder_next_attempt_at,
+                               reminder_locked_until
                         FROM active_walks
                     """)
                 con.execute("DROP TABLE active_walks")
@@ -937,6 +964,94 @@ class Database:
                 if cur.rowcount:
                     claimed.append(dict(row))
         return claimed
+
+    def claim_due_active_walk_reminders(
+        self,
+        now: datetime,
+        started_before: datetime,
+        *,
+        limit: int = 50,
+        lease: timedelta = timedelta(minutes=2),
+    ) -> list[dict]:
+        now_utc = now.astimezone(timezone.utc)
+        now_iso = now_utc.isoformat(timespec="seconds")
+        started_before_iso = started_before.astimezone(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        locked_until = (now_utc + lease).isoformat(timespec="seconds")
+        with self._connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            con.execute(
+                """
+                UPDATE active_walks
+                SET reminder_status = 'pending', reminder_locked_until = NULL
+                WHERE reminder_status = 'sending' AND reminder_locked_until <= ?
+                """,
+                (now_iso,),
+            )
+            rows = con.execute(
+                """
+                SELECT person_id, started_at, reminder_attempts
+                FROM active_walks
+                WHERE reminder_status = 'pending' AND started_at <= ?
+                  AND (reminder_next_attempt_at IS NULL OR reminder_next_attempt_at <= ?)
+                ORDER BY COALESCE(reminder_next_attempt_at, started_at), person_id
+                LIMIT ?
+                """,
+                (started_before_iso, now_iso, limit),
+            ).fetchall()
+            claimed = []
+            for row in rows:
+                cur = con.execute(
+                    """
+                    UPDATE active_walks
+                    SET reminder_status = 'sending', reminder_locked_until = ?
+                    WHERE person_id = ? AND started_at = ? AND reminder_status = 'pending'
+                    """,
+                    (locked_until, row["person_id"], row["started_at"]),
+                )
+                if cur.rowcount:
+                    claimed.append(dict(row))
+        return claimed
+
+    def finish_active_walk_reminder(
+        self, person_id: int, started_at: str, status: str
+    ) -> bool:
+        if status not in {"sent", "cancelled"}:
+            raise ValueError("Ungültiger Reminder-Status")
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                UPDATE active_walks
+                SET reminder_status = ?, reminder_locked_until = NULL,
+                    reminder_next_attempt_at = NULL
+                WHERE person_id = ? AND started_at = ? AND reminder_status = 'sending'
+                """,
+                (status, person_id, started_at),
+            )
+        return cur.rowcount > 0
+
+    def retry_active_walk_reminder(
+        self,
+        person_id: int,
+        started_at: str,
+        next_attempt_at: datetime,
+    ) -> bool:
+        next_iso = next_attempt_at.astimezone(timezone.utc).isoformat(
+            timespec="seconds"
+        )
+        with self._connect() as con:
+            cur = con.execute(
+                """
+                UPDATE active_walks
+                SET reminder_status = 'pending',
+                    reminder_attempts = reminder_attempts + 1,
+                    reminder_next_attempt_at = ?, reminder_locked_until = NULL
+                WHERE person_id = ? AND started_at = ? AND reminder_status = 'sending'
+                """,
+                (next_iso, person_id, started_at),
+            )
+        return cur.rowcount > 0
 
     def finish_reminder(self, reminder_id: int, status: str, now: datetime) -> bool:
         if status not in {"sent", "cancelled", "expired"}:

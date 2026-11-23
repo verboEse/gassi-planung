@@ -18,6 +18,7 @@ from .db import Database
 from .ical import SLOT_TIMES, SLOT_LABELS, TZ
 
 logger = logging.getLogger(__name__)
+ACTIVE_WALK_REMINDER_DELAY = timedelta(hours=2)
 
 
 def slot_start_utc(walk_date: str, slot: str) -> datetime:
@@ -104,6 +105,37 @@ def send_event_push(
     return sent
 
 
+async def _send_reminder_payload(
+    db: Database,
+    person_id: int,
+    payload: dict,
+    vapid: Vapid,
+    subject: str,
+    sender,
+) -> tuple[bool, bool]:
+    sent = False
+    retry = False
+    for subscription in db.list_push_subscriptions(person_id):
+        try:
+            await asyncio.to_thread(sender, subscription, payload, vapid, subject)
+            sent = True
+        except WebPushException as error:
+            if error.status_code in {404, 410}:
+                db.delete_push_subscription(person_id, subscription["endpoint"])
+            elif error.status_code is None or error.status_code == 429 or error.status_code >= 500:
+                retry = True
+                logger.warning("Browser-Push fehlgeschlagen (HTTP %s)", error.status_code)
+            else:
+                logger.warning("Browser-Push abgelehnt (HTTP %s)", error.status_code)
+        except requests.exceptions.RequestException as error:
+            retry = True
+            logger.warning("Browser-Push-Netzwerkfehler (%s)", type(error).__name__)
+        except Exception as error:
+            retry = True
+            logger.warning("Browser-Push-Versandfehler (%s)", type(error).__name__)
+    return sent, retry
+
+
 async def dispatch_due_reminders(
     db: Database,
     jobs: list[tuple[int, str, str, str]],
@@ -127,37 +159,15 @@ async def dispatch_due_reminders(
         if now >= slot_start:
             db.finish_reminder(reminder_id, "expired", now)
             continue
-        subscriptions = db.list_push_subscriptions(person_id)
-        if not subscriptions:
-            db.finish_reminder(reminder_id, "cancelled", now)
-            continue
-
         payload = {
             "title": "Gassi-Erinnerung",
             "body": f"In 15 Minuten: Gassi-Runde {SLOT_LABELS[job['slot']]}",
             "tag": f"gassi-{person_id}-{job['walk_date']}-{job['slot']}",
             "url": "/",
         }
-        sent = False
-        retry = False
-        for subscription in subscriptions:
-            try:
-                await asyncio.to_thread(sender, subscription, payload, vapid, subject)
-                sent = True
-            except WebPushException as error:
-                if error.status_code in {404, 410}:
-                    db.delete_push_subscription(person_id, subscription["endpoint"])
-                elif error.status_code is None or error.status_code == 429 or error.status_code >= 500:
-                    retry = True
-                    logger.warning("Browser-Push fehlgeschlagen (HTTP %s)", error.status_code)
-                else:
-                    logger.warning("Browser-Push abgelehnt (HTTP %s)", error.status_code)
-            except requests.exceptions.RequestException as error:
-                retry = True
-                logger.warning("Browser-Push-Netzwerkfehler (%s)", type(error).__name__)
-            except Exception as error:
-                retry = True
-                logger.warning("Browser-Push-Versandfehler (%s)", type(error).__name__)
+        sent, retry = await _send_reminder_payload(
+            db, person_id, payload, vapid, subject, sender
+        )
 
         if retry:
             attempts = job["attempts"] + 1
@@ -173,3 +183,55 @@ async def dispatch_due_reminders(
             db.finish_reminder(reminder_id, "sent", now)
         else:
             db.finish_reminder(reminder_id, "cancelled", now)
+
+
+async def dispatch_due_active_walk_reminders(
+    db: Database,
+    enabled_person_ids: set[int],
+    now: datetime,
+    vapid: Vapid,
+    subject: str,
+    sender=send_browser_push,
+) -> None:
+    now = now.astimezone(timezone.utc)
+    jobs = db.claim_due_active_walk_reminders(
+        now, now - ACTIVE_WALK_REMINDER_DELAY
+    )
+    for job in jobs:
+        person_id = job["person_id"]
+        started_at = job["started_at"]
+        active = db.active_walk(person_id)
+        if (
+            person_id not in enabled_person_ids
+            or not db.reminders_enabled(person_id)
+            or active is None
+            or active["started_at"] != started_at
+        ):
+            db.finish_active_walk_reminder(person_id, started_at, "cancelled")
+            continue
+
+        payload = {
+            "title": "Gassirunde noch aktiv",
+            "body": (
+                "Deine Gassirunde ist seit zwei Stunden aktiv. "
+                "Beende sie in der App, wenn du zurück bist."
+            ),
+            "tag": f"gassi-active-walk-{person_id}-{started_at}",
+            "url": "/",
+        }
+        sent, retry = await _send_reminder_payload(
+            db, person_id, payload, vapid, subject, sender
+        )
+        if retry:
+            attempts = job["reminder_attempts"] + 1
+            if attempts >= 3:
+                db.finish_active_walk_reminder(person_id, started_at, "cancelled")
+            else:
+                next_attempt = now + timedelta(seconds=30 * 2 ** (attempts - 1))
+                db.retry_active_walk_reminder(
+                    person_id, started_at, next_attempt
+                )
+        elif sent:
+            db.finish_active_walk_reminder(person_id, started_at, "sent")
+        else:
+            db.finish_active_walk_reminder(person_id, started_at, "cancelled")
