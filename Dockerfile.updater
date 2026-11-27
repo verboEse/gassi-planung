@@ -1,0 +1,14 @@
+FROM docker:cli
+
+RUN apk add --no-cache docker-cli-compose git python3 \
+    && mkdir -p /state \
+    && chown 10001:10001 /state
+
+ENV GASSI_UPDATE_STATE_DIR=/state \
+    GASSI_UPDATE_PROJECT_DIR=/workspace \
+    GIT_TERMINAL_PROMPT=0 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /workspace
+ENTRYPOINT []
+CMD ["python3", "-m", "app.server_update"]

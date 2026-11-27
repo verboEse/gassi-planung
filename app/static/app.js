@@ -9,6 +9,7 @@ const state = {
   takeovers: [],
   adminData: null,
   adminUserId: null,
+  serverUpdate: null,
   gamification: null,
   profile: null,
   badgeCatalog: null,
@@ -26,6 +27,7 @@ let takeoverRequestTarget = null;
 let takeoverApprovalTarget = null;
 let dogSelectionResolver = null;
 let calendarWalkStartInFlight = false;
+let serverUpdatePoll = null;
 
 const SLOT_KEYS = ["morning", "noon", "evening"];
 const SLOT_LABELS = { morning: "Morgens", noon: "Mittags", evening: "Abends" };
@@ -1330,6 +1332,62 @@ function renderAdminUsers() {
   renderAdminPrefs();
 }
 
+function renderServerUpdateStatus(update) {
+  const busy = update.state === "queued" || update.state === "running";
+  document.getElementById("serverUpdateStatus").textContent = update.message;
+  const button = document.getElementById("startServerUpdate");
+  button.disabled = busy || update.state === "unavailable";
+  button.textContent = update.state === "queued"
+    ? "Update wartet…"
+    : update.state === "running" ? "Update läuft…" : "Server aktualisieren";
+}
+
+function scheduleServerUpdatePoll(delay = 3000) {
+  clearTimeout(serverUpdatePoll);
+  serverUpdatePoll = setTimeout(refreshServerUpdateStatus, delay);
+}
+
+async function refreshServerUpdateStatus() {
+  if (!state.me?.person.is_admin) return;
+  try {
+    state.serverUpdate = await api("/api/admin/server-update");
+    renderServerUpdateStatus(state.serverUpdate);
+    if (state.serverUpdate.state === "queued" || state.serverUpdate.state === "running") {
+      scheduleServerUpdatePoll();
+    } else {
+      clearTimeout(serverUpdatePoll);
+      serverUpdatePoll = null;
+    }
+  } catch (error) {
+    if (state.serverUpdate?.state === "queued" || state.serverUpdate?.state === "running") {
+      renderServerUpdateStatus({
+        ...state.serverUpdate,
+        message: "Update läuft; die Verbindung wird nach dem Neustart wiederhergestellt.",
+      });
+      scheduleServerUpdatePoll(5000);
+      return;
+    }
+    state.serverUpdate = { state: "unavailable", message: error.message };
+    renderServerUpdateStatus(state.serverUpdate);
+  }
+}
+
+async function requestServerUpdate() {
+  if (!state.me?.person.is_admin || !confirm(
+    "Server aktualisieren? Die App kann währenddessen kurz nicht erreichbar sein."
+  )) return;
+  state.serverUpdate = { state: "queued", message: "Update-Anfrage wird übermittelt." };
+  renderServerUpdateStatus(state.serverUpdate);
+  try {
+    state.serverUpdate = await api("/api/admin/server-update", { method: "POST" });
+    renderServerUpdateStatus(state.serverUpdate);
+    await refreshServerUpdateStatus();
+  } catch (error) {
+    toast(error.message);
+    await refreshServerUpdateStatus();
+  }
+}
+
 function renderAdminCompletionPeople(users) {
   const takeoverSelect = document.getElementById("adminTakeoverPerson");
   const groupSelect = document.getElementById("adminGroupPeople");
@@ -1499,6 +1557,7 @@ async function loadAdminPanel() {
     state.adminData = await api("/api/admin/users");
     renderAdminUsers();
     await refreshAdminActivity();
+    await refreshServerUpdateStatus();
   } catch (e) { toast(e.message); }
 }
 
@@ -1873,6 +1932,7 @@ document.getElementById("adminUserSelect").onchange = (ev) => {
 document.getElementById("adminCompletionKind").onchange = renderAdminCompletionKind;
 document.getElementById("adminCompletionForm").onsubmit = submitAdminCompletion;
 document.getElementById("refreshActivity").onclick = () => refreshAdminActivity();
+document.getElementById("startServerUpdate").onclick = requestServerUpdate;
 document.getElementById("adminPasswordForm").onsubmit = async (ev) => {
   ev.preventDefault();
   if (!state.adminUserId) return;

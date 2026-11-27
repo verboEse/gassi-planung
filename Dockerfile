@@ -7,7 +7,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
-RUN mkdir /data && chown 10001:10001 /data
+RUN mkdir /data /updates && chown 10001:10001 /data /updates
 
 USER 10001:10001
 EXPOSE 8585

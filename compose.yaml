@@ -5,14 +5,28 @@ services:
     environment:
       GASSI_BASE_URL: https://gassiplan.verboese.de
       GASSI_DB: /data/gassi.sqlite3
+      GASSI_UPDATE_STATE_DIR: /updates
     expose:
       - "8585"
     volumes:
       - gassi-data:/data
+      - gassi-update-state:/updates
     networks:
       proxy:
         aliases:
           - gassi-planung-app
+    restart: unless-stopped
+
+  updater:
+    build:
+      context: .
+      dockerfile: Dockerfile.updater
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+      - gassi-update-state:/state
+    working_dir: /workspace
+    init: true
     restart: unless-stopped
 
 networks:
@@ -22,3 +36,4 @@ networks:
 
 volumes:
   gassi-data:
+  gassi-update-state:

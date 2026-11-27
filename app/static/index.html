@@ -11,7 +11,7 @@
   <meta name="apple-mobile-web-app-title" content="Gassi-Planung">
   <link rel="manifest" href="/static/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
-  <link rel="stylesheet" href="/static/style.css?v=19">
+  <link rel="stylesheet" href="/static/style.css?v=20">
 </head>
 
 <body>
@@ -98,6 +98,16 @@
 
       <details class="card" id="adminSection" hidden>
         <summary>Administration</summary>
+        <section class="admin-server-update">
+          <h3>Server-Update</h3>
+          <p class="hint">
+            Das Update kann die App kurz unterbrechen. Gespeicherte Daten bleiben erhalten.
+          </p>
+          <div class="admin-server-update-controls">
+            <button id="startServerUpdate" type="button">Server aktualisieren</button>
+            <p id="serverUpdateStatus" class="hint" role="status" aria-live="polite"></p>
+          </div>
+        </section>
         <label>Teilnehmer
           <select id="adminUserSelect"></select>
         </label>
@@ -308,7 +318,7 @@
     </div>
   </dialog>
   <script src="/static/walk-guidance.js?v=1"></script>
-  <script src="/static/app.js?v=28"></script>
+  <script src="/static/app.js?v=29"></script>
 </body>
 
 </html>
