@@ -109,6 +109,10 @@ button.secondary { background: transparent; border: 1px solid var(--border); col
   padding: 0.4rem 0.6rem;
 }
 #adminSection > label { display: grid; gap: 0.3rem; max-width: 24rem; }
+.admin-server-update { border-bottom: 1px solid var(--border); padding-bottom: 1rem; }
+.admin-server-update h3 { margin-top: 0; }
+.admin-server-update-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.admin-server-update-controls p { margin: 0; }
 .admin-completion-form { border-top: 1px solid var(--border); padding-top: 1rem; }
 .admin-completion-form h3 { margin: 0; }
 .admin-completion-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: 0.8rem; }

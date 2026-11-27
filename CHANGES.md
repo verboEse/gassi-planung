@@ -12,6 +12,12 @@ The current app version is maintained in `app/__init__.py`.
 
 - Bei aktivierten Browser-Erinnerungen kommt nach zwei Stunden eine einmalige Erinnerung für noch aktive Gassirunden; sie werden nicht automatisch beendet.
 
+## [0.8.0] - 2026-11-27
+
+### Added
+
+- Admins können Server-Updates in der App starten und deren Status verfolgen; der lokale Updater baut nur den App-Container neu.
+
 ## [0.6.1] - 2026-11-18
 
 ### Fixed

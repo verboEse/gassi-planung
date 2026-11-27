@@ -114,6 +114,20 @@ docker compose down
 auch die Container-Datenbank. Passwort-Reset im Container:
 `docker compose exec app python -m app.admin reset-password "Teilnehmername"`.
 
+### Server-Updates im Admin-Bereich
+
+Nach der Anmeldung kann ein Admin unter „Administration“ ein Server-Update
+starten. Der lokale Updater führt `git pull --ff-only` aus und baut anschließend
+nur den App-Service mit `docker compose up -d --build app` neu. Die App zeigt
+den Status und einen Fehlerhinweis; das Datenvolume bleibt erhalten. Details
+stehen bei Bedarf in `docker compose logs updater`.
+
+Der Updater benötigt den Projektordner und `/var/run/docker.sock`. Der Socket
+gibt seinem Container weitreichende Kontrolle über den Docker-Host. Er wird
+nicht über einen Host-Port veröffentlicht, aber ein kompromittierter Updater
+kann den Host gefährden. Änderungen am Updater-Image selbst müssen manuell mit
+`docker compose up -d --build updater` übernommen werden.
+
 ### Konten einrichten
 
 Für den öffentlichen Betrieb HTTPS verwenden. Diese Umgebungsvariablen setzen:
@@ -152,8 +166,8 @@ Lokal ohne Docker: `.venv/bin/python -m app.admin grant-admin "Jan"`.
 Weitere Befehle: `revoke-admin "Name"` und `reset-password "Name"`. Der letzte
 Admin kann nicht herabgestuft werden. Nach dem Anmelden sehen Admins die
 Verwaltungsseite: Sie können Präferenzen anderer Teilnehmer für die Folgewoche
-überschreiben und deren Passwort zurücksetzen. Ein Passwort-Reset beendet
-vorhandene Sitzungen des betroffenen Kontos.
+überschreiben, Passwörter zurücksetzen und Server-Updates starten. Ein
+Passwort-Reset beendet vorhandene Sitzungen des betroffenen Kontos.
 
 Die Aktivitätsliste zeigt erfolgreiche Anmeldungen und Präferenzänderungen
 (einschließlich Admin-Overrides) der letzten 90 Tage. Passwörter und

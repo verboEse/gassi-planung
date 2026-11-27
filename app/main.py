@@ -49,6 +49,12 @@ from .scheduler import (
     WEEKDAYS,
     compute_plan,
 )
+from .server_update import (
+    ServerUpdateInProgress,
+    ServerUpdateStateError,
+    get_server_update_status,
+    queue_server_update,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 BERLIN = ZoneInfo("Europe/Berlin")
@@ -62,6 +68,15 @@ PUSH_SERVICE_HOSTS = {
     "web.push.apple.com",
 }
 RELEASE_NEWS = (
+    {
+        "id": "0.8.0-server-update",
+        "version": "0.8.0",
+        "title": "Server-Updates direkt in der App starten",
+        "body": (
+            "Du kannst Server-Updates direkt in der Verwaltung starten und ihren "
+            "Fortschritt verfolgen. Deine gespeicherten Daten bleiben erhalten."
+        ),
+    },
     {
         "id": "0.7.0-active-walk-reminder",
         "version": "0.7.0",
@@ -377,6 +392,8 @@ def expand_prefs(
 
 def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> FastAPI:
     db = Database(db_path or os.environ.get("GASSI_DB", "gassi.sqlite3"))
+    update_state_path = os.environ.get("GASSI_UPDATE_STATE_DIR")
+    update_state_dir = Path(update_state_path) if update_state_path else None
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -848,6 +865,38 @@ def create_app(db_path: str | None = None, *, auth_enabled: bool = True) -> Fast
             for (weekday, slot, person_id), value in db.prefs_all().items():
                 prefs.setdefault(str(person_id), {}).setdefault(str(weekday), {})[slot] = value
             return {"users": db.list_admin_users(), "prefs": prefs}
+
+        @app.get("/api/admin/server-update")
+        def admin_server_update_status(admin: dict = Depends(require_admin)):
+            if update_state_dir is None:
+                return {
+                    "state": "unavailable",
+                    "message": "Server-Updates sind für diese Installation nicht eingerichtet.",
+                    "updated_at": None,
+                }
+            try:
+                return get_server_update_status(update_state_dir)
+            except (OSError, ServerUpdateStateError) as exc:
+                logger.exception("Server-Update-Status kann nicht gelesen werden")
+                raise HTTPException(
+                    503, "Server-Update-Status kann nicht gelesen werden"
+                ) from exc
+
+        @app.post("/api/admin/server-update", status_code=202)
+        def admin_request_server_update(admin: dict = Depends(require_admin)):
+            if update_state_dir is None:
+                raise HTTPException(
+                    503, "Server-Updates sind für diese Installation nicht eingerichtet."
+                )
+            try:
+                return queue_server_update(update_state_dir)
+            except ServerUpdateInProgress as exc:
+                raise HTTPException(409, "Ein Server-Update läuft bereits.") from exc
+            except (OSError, ServerUpdateStateError) as exc:
+                logger.exception("Server-Update kann nicht gestartet werden")
+                raise HTTPException(
+                    503, "Server-Update kann nicht gestartet werden."
+                ) from exc
 
         @app.get("/api/admin/activity", dependencies=[Depends(require_admin)])
         def admin_activity():
